@@ -1,0 +1,37 @@
+[package]
+name = "codex-app2web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.23"
+bytes = "1"
+chromiumoxide = "0.9"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+include_dir = "0.7"
+mime_guess = "2.0"
+rand = "0.10"
+rtc = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+video_toolbox = { package = "shiguredo_video_toolbox", version = "2026.1" }
+webrtc = "0.21"
+yuv = "0.8"
+
+[profile.dev.package.codex-app2web]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.yuv]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+

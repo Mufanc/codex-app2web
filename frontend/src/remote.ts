@@ -1,0 +1,352 @@
+import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
+
+export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'unsupported' | 'error';
+
+type Point = { x: number; y: number };
+type Picture = { left: number; top: number; width: number; height: number };
+
+const MAX_VIDEO_WIDTH = 4096;
+const MAX_VIDEO_HEIGHT = 2160;
+
+export function startRemote(
+    stage: HTMLElement,
+    screen: HTMLVideoElement,
+    keyboard: HTMLTextAreaElement,
+    onState: (state: ConnectionState, detail?: string) => void,
+    onSize: (width: number, height: number) => void,
+) {
+    const sessionId = crypto.randomUUID();
+    const pressed = new Set<string>();
+
+    let sourceWidth = 0;
+    let sourceHeight = 0;
+    let sentViewport: [number, number] | null = null;
+    let videoStarted = false;
+    let decodedSize: [number, number] | null = null;
+    let socket: WebSocket | undefined;
+    let videoAbort: AbortController | undefined;
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let composing = false;
+    let disposed = false;
+
+    function pictureRect(): Picture | null {
+        const size = decodedSize;
+
+        if (!size || !sourceWidth || !sourceHeight) return null;
+
+        const area = stage.getBoundingClientRect();
+        const videoScale = Math.min(area.width / size[0], area.height / size[1]);
+        const width = size[0] * videoScale;
+        const height = size[1] * videoScale;
+
+        return { left: (area.width - width) / 2, top: (area.height - height) / 2, width, height };
+    }
+
+    function coordinates(event: PointerEvent | WheelEvent, clamp = false): Point | null {
+        const rect = pictureRect();
+
+        if (!rect) return null;
+
+        const area = stage.getBoundingClientRect();
+        const x = event.clientX - area.left - rect.left;
+        const y = event.clientY - area.top - rect.top;
+
+        if (!clamp && (x < 0 || y < 0 || x > rect.width || y > rect.height)) return null;
+
+        return {
+            x: Math.max(0, Math.min(rect.width, x)) / rect.width * sourceWidth,
+            y: Math.max(0, Math.min(rect.height, y)) / rect.height * sourceHeight,
+        };
+    }
+
+    function placeKeyboard(point: Point | null) {
+        const rect = pictureRect();
+
+        if (!rect || !point) return;
+
+        keyboard.style.left = `${Math.max(0, Math.min(stage.clientWidth - 2, rect.left + point.x / sourceWidth * rect.width))}px`;
+        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - 20, rect.top + point.y / sourceHeight * rect.height))}px`;
+    }
+
+    function onScreenResize() {
+        decodedSize = screen.videoWidth && screen.videoHeight ? [screen.videoWidth, screen.videoHeight] : null;
+    }
+
+    screen.addEventListener('resize', onScreenResize);
+
+    function send(message: object) {
+        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    }
+
+    function resizeVideo(immediate = false) {
+        clearTimeout(resizeTimer);
+
+        resizeTimer = setTimeout(() => {
+            if (socket?.readyState !== WebSocket.OPEN) return;
+
+            const viewportWidth = Math.max(320, Math.min(MAX_VIDEO_WIDTH, Math.round(stage.clientWidth * devicePixelRatio)));
+            const viewportHeight = Math.max(240, Math.min(MAX_VIDEO_HEIGHT, Math.round(stage.clientHeight * devicePixelRatio)));
+
+            if (!sentViewport || sentViewport[0] !== viewportWidth || sentViewport[1] !== viewportHeight) {
+                send({ type: 'resize', width: viewportWidth, height: viewportHeight });
+                sentViewport = [viewportWidth, viewportHeight];
+            }
+
+            if (sourceWidth && sourceHeight) void startVideo();
+        }, immediate ? 0 : 1000);
+    }
+
+    const resizeObserver = new ResizeObserver(() => resizeVideo());
+
+    resizeObserver.observe(stage);
+
+    async function startVideo() {
+        if (videoStarted && !videoAbort?.signal.aborted) return;
+
+        videoAbort?.abort();
+        videoAbort = new AbortController();
+
+        const signal = videoAbort.signal;
+        const hevc = window.RTCPeerConnection
+            ? RTCRtpReceiver.getCapabilities('video')?.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h265')
+            : undefined;
+
+        if (!hevc?.length) {
+            onState('unsupported', '此 Chrome 或系统不支持 WebRTC H.265');
+
+            return;
+        }
+
+        const peer = new RTCPeerConnection({
+            iceServers: [{ urls: stunServers }],
+        });
+
+        signal.addEventListener('abort', () => {
+            peer.close();
+            screen.srcObject = null;
+            decodedSize = null;
+        }, { once: true });
+
+        videoStarted = true;
+
+        const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
+
+        transceiver.setCodecPreferences(hevc);
+
+        peer.ontrack = event => {
+            screen.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+
+            screen.requestVideoFrameCallback(() => {
+                if (!signal.aborted) {
+                    onScreenResize();
+                    onState('streaming');
+                }
+            });
+
+            void screen.play().catch(error => {
+                if (!signal.aborted) onState('error', `视频播放失败：${String(error)}`);
+            });
+        };
+
+        peer.onconnectionstatechange = () => {
+            if (peer.connectionState === 'failed' && !signal.aborted) {
+                onState('error', 'WebRTC 连接失败，可能无法 UDP 打洞');
+            }
+        };
+
+        try {
+            const offer = await peer.createOffer();
+
+            await peer.setLocalDescription(offer);
+
+            if (peer.iceGatheringState !== 'complete') {
+                await new Promise<void>((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error('ICE 候选收集超时')), 15000);
+
+                    peer.addEventListener('icegatheringstatechange', () => {
+                        if (peer.iceGatheringState === 'complete') {
+                            clearTimeout(timeout);
+                            resolve();
+                        }
+                    });
+
+                    signal.addEventListener('abort', () => { clearTimeout(timeout); reject(new Error('已取消')); }, { once: true });
+                });
+            }
+
+            const response = await fetch('/offer', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ id: sessionId, width: MAX_VIDEO_WIDTH, height: MAX_VIDEO_HEIGHT, sdp: peer.localDescription!.sdp }),
+                signal,
+            });
+
+            if (!response.ok) throw new Error(await response.text());
+
+            await peer.setRemoteDescription(await response.json() as RTCSessionDescriptionInit);
+        } catch (error) {
+            if (!signal.aborted) {
+                videoStarted = false;
+                peer.close();
+                onState('error', `WebRTC 视频连接失败：${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+    }
+
+    function modifiers(event: KeyboardEvent) {
+        return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+        if (event.isComposing || composing || event.key === 'Process' || event.key === 'Dead') return;
+        if (!(event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1)) return;
+
+        event.preventDefault();
+        pressed.add(event.code);
+
+        send({ type: 'key', action: 'keyDown', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
+    }
+
+    function onKeyUp(event: KeyboardEvent) {
+        if (!pressed.delete(event.code)) return;
+
+        event.preventDefault();
+        send({ type: 'key', action: 'keyUp', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
+    }
+
+    function sendKeyboardText() {
+        if (!keyboard.value) return;
+
+        send({ type: 'text', text: keyboard.value });
+        keyboard.value = '';
+    }
+
+    function onCompositionStart() { composing = true; }
+
+    function onCompositionEnd() { composing = false; setTimeout(sendKeyboardText, 0); }
+
+    function onInput(event: Event) {
+        if (!(event as InputEvent).isComposing && !composing) sendKeyboardText();
+    }
+
+    function onPointerDown(event: PointerEvent) {
+        const point = coordinates(event);
+
+        if (!point) return;
+
+        event.preventDefault();
+        placeKeyboard(point);
+        keyboard.focus({ preventScroll: true });
+        stage.setPointerCapture(event.pointerId);
+        send({ type: 'mouse', action: 'mousePressed', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
+    }
+
+    function onPointerMove(event: PointerEvent) {
+        const point = coordinates(event, stage.hasPointerCapture(event.pointerId));
+
+        if (point) send({ type: 'mouse', action: 'mouseMoved', ...point, button: 'none', buttons: event.buttons });
+    }
+
+    function onPointerUp(event: PointerEvent) {
+        const point = coordinates(event, true);
+
+        if (point) send({ type: 'mouse', action: 'mouseReleased', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
+    }
+
+    function onWheel(event: WheelEvent) {
+        const point = coordinates(event);
+
+        if (!point) return;
+
+        event.preventDefault();
+        send({ type: 'wheel', ...point, delta_x: event.deltaX, delta_y: event.deltaY });
+    }
+
+    function onContextMenu(event: MouseEvent) { event.preventDefault(); }
+
+    keyboard.addEventListener('keydown', onKeyDown);
+    keyboard.addEventListener('keyup', onKeyUp);
+    keyboard.addEventListener('compositionstart', onCompositionStart);
+    keyboard.addEventListener('compositionend', onCompositionEnd);
+    keyboard.addEventListener('input', onInput);
+
+    stage.addEventListener('pointerdown', onPointerDown);
+    stage.addEventListener('pointermove', onPointerMove);
+    stage.addEventListener('pointerup', onPointerUp);
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    stage.addEventListener('contextmenu', onContextMenu);
+
+    function connect(claim = false) {
+        if (disposed) return;
+
+        onState('connecting');
+        socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?id=${sessionId}${claim ? '&takeover=true' : ''}`);
+
+        socket.onopen = () => resizeVideo(true);
+
+        socket.onmessage = event => {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'size') {
+                const firstSize = !sourceWidth || !sourceHeight;
+                const changed = sourceWidth !== message.width || sourceHeight !== message.height;
+
+                sourceWidth = message.width;
+                sourceHeight = message.height;
+
+                if (changed) {
+                    onSize(sourceWidth, sourceHeight);
+
+                    if (firstSize) resizeVideo(true);
+                }
+            }
+
+            if (message.type === 'cursor') placeKeyboard(message.point);
+        };
+
+        socket.onclose = event => {
+            videoAbort?.abort();
+            videoStarted = false;
+            sentViewport = null;
+
+            if (disposed) return;
+
+            const occupied = event.reason === 'occupied' || event.reason === 'taken over';
+
+            onState(occupied ? 'occupied' : 'disconnected');
+
+            if (!occupied) reconnectTimer = setTimeout(() => connect(), 1000);
+        };
+    }
+
+    connect();
+
+    return {
+        claim: () => connect(true),
+
+        dispose: () => {
+            disposed = true;
+
+            clearTimeout(resizeTimer);
+            clearTimeout(reconnectTimer);
+
+            resizeObserver.disconnect();
+            screen.removeEventListener('resize', onScreenResize);
+            videoAbort?.abort();
+            socket?.close();
+
+            keyboard.removeEventListener('keydown', onKeyDown);
+            keyboard.removeEventListener('keyup', onKeyUp);
+            keyboard.removeEventListener('compositionstart', onCompositionStart);
+            keyboard.removeEventListener('compositionend', onCompositionEnd);
+            keyboard.removeEventListener('input', onInput);
+
+            stage.removeEventListener('pointerdown', onPointerDown);
+            stage.removeEventListener('pointermove', onPointerMove);
+            stage.removeEventListener('pointerup', onPointerUp);
+            stage.removeEventListener('wheel', onWheel);
+            stage.removeEventListener('contextmenu', onContextMenu);
+        },
+    };
+}

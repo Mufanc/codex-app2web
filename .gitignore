@@ -1,0 +1,5 @@
+/target
+/.pnpm-store
+/frontend/node_modules
+/frontend/dist
+
