@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { startRemote } from '../src/remote.ts';
 
-function setup(t, viewport, source, decoded = source) {
+function setup(t, viewport, source, decoded = source, Peer) {
     t.mock.timers.enable({ apis: ['setTimeout'] });
 
     const originals = new Map();
@@ -39,7 +39,9 @@ function setup(t, viewport, source, decoded = source) {
 
     global('location', { protocol: 'http:', host: 'localhost' });
     global('devicePixelRatio', 1);
-    global('window', {});
+    global('window', { RTCPeerConnection: Peer });
+    global('RTCPeerConnection', Peer);
+    global('RTCRtpReceiver', { getCapabilities: () => ({ codecs: [{ mimeType: 'video/H265' }] }) });
 
     const stage = Object.assign(new EventTarget(), {
         clientWidth: viewport[0], clientHeight: viewport[1],
@@ -133,4 +135,68 @@ test('only a changed viewport is reported, after one second of inactivity', t =>
 
     assert.deepEqual(reports().at(-1), { type: 'resize', width: 800, height: 600 });
     assert.equal(reports().length, 2);
+});
+
+test('trickle ICE sends the offer immediately and applies candidates after the answer', async t => {
+    let peer;
+    let finishAnswer;
+    const candidate = { candidate: 'candidate:test', sdpMid: '0', sdpMLineIndex: 0 };
+    const applied = [];
+
+    class Peer {
+        iceGatheringState = 'gathering';
+
+        constructor() { peer = this; }
+
+        addTransceiver() { return { setCodecPreferences() {} }; }
+
+        async createOffer() { return { type: 'offer', sdp: 'test offer' }; }
+
+        async setLocalDescription() {
+            this.onicecandidate({ candidate: { toJSON: () => candidate } });
+            this.onicecandidate({ candidate: null });
+        }
+
+        async setRemoteDescription(description) {
+            await new Promise(resolve => { finishAnswer = resolve; });
+            applied.push(description.type);
+        }
+
+        async addIceCandidate(value) { applied.push(value ?? null); }
+
+        close() { this.closed = true; }
+    }
+
+    const remote = setup(t, [800, 600], [960, 540], [800, 450], Peer);
+    const flush = () => new Promise(setImmediate);
+
+    await flush();
+
+    const messages = remote.socket.sent.filter(message => message.type !== 'resize');
+    const offer = messages[0];
+
+    assert.equal(peer.iceGatheringState, 'gathering');
+    assert.equal(offer.type, 'offer');
+    assert.deepEqual(messages.map(message => message.type), ['offer', 'ice', 'ice']);
+    assert.deepEqual(messages[1].candidate, candidate);
+    assert.equal(messages[2].candidate, null);
+
+    const receive = message => remote.socket.onmessage({ data: JSON.stringify(message) });
+
+    receive({ type: 'ice', video_id: 'stale-session', candidate });
+    receive({ type: 'answer', video_id: offer.video_id, description: { type: 'answer', sdp: 'test answer' } });
+    receive({ type: 'ice', video_id: offer.video_id, candidate });
+    receive({ type: 'ice', video_id: offer.video_id, candidate: null });
+    await flush();
+    assert.deepEqual(applied, []);
+
+    finishAnswer();
+    await flush();
+    assert.deepEqual(applied, ['answer', candidate, null]);
+
+    remote.socket.onclose({ reason: 'taken over' });
+    receive({ type: 'ice', video_id: offer.video_id, candidate });
+    await flush();
+    assert.equal(peer.closed, true);
+    assert.deepEqual(applied, ['answer', candidate, null]);
 });

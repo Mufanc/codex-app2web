@@ -2,11 +2,16 @@ import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
 
 export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'unsupported' | 'error';
 
+type VideoSignal =
+    | { type: 'answer'; video_id: string; description: RTCSessionDescriptionInit }
+    | { type: 'ice'; video_id: string; candidate: RTCIceCandidateInit | null };
+
 type Point = { x: number; y: number };
 type Picture = { left: number; top: number; width: number; height: number };
 
 const MAX_VIDEO_WIDTH = 4096;
 const MAX_VIDEO_HEIGHT = 2160;
+const VIDEO_CONNECT_TIMEOUT_MS = 30_000;
 
 export function startRemote(
     stage: HTMLElement,
@@ -25,6 +30,7 @@ export function startRemote(
     let decodedSize: [number, number] | null = null;
     let socket: WebSocket | undefined;
     let videoAbort: AbortController | undefined;
+    let receiveVideoSignal: ((message: VideoSignal) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let composing = false;
@@ -122,11 +128,48 @@ export function startRemote(
             iceServers: [{ urls: stunServers }],
         });
 
+        const videoId = crypto.randomUUID();
+        const pendingCandidates: (RTCIceCandidateInit | null)[] = [];
+        let offerSent = false;
+        let incomingSignals = Promise.resolve();
+        const timeout = setTimeout(() => fail('连接超时，请重试'), VIDEO_CONNECT_TIMEOUT_MS);
+
+        function fail(message: string) {
+            if (signal.aborted) return;
+
+            videoStarted = false;
+            videoAbort?.abort();
+            onState('error', message);
+        }
+
         signal.addEventListener('abort', () => {
+            clearTimeout(timeout);
+            receiveVideoSignal = undefined;
             peer.close();
             screen.srcObject = null;
             decodedSize = null;
         }, { once: true });
+
+        peer.onicecandidate = event => {
+            if (signal.aborted) return;
+
+            const candidate = event.candidate?.toJSON() ?? null;
+
+            if (offerSent) send({ type: 'ice', video_id: videoId, candidate });
+            else pendingCandidates.push(candidate);
+        };
+
+        receiveVideoSignal = message => {
+            if (signal.aborted || message.video_id !== videoId) return;
+
+            // Candidates must wait for the preceding answer to finish being applied.
+            incomingSignals = incomingSignals.then(async () => {
+                if (signal.aborted) return;
+
+                if (message.type === 'answer') await peer.setRemoteDescription(message.description);
+                else await peer.addIceCandidate(message.candidate ?? undefined);
+            }).catch(error => fail(`WebRTC 信令失败：${String(error)}`));
+        };
 
         videoStarted = true;
 
@@ -139,19 +182,20 @@ export function startRemote(
 
             screen.requestVideoFrameCallback(() => {
                 if (!signal.aborted) {
+                    clearTimeout(timeout);
                     onScreenResize();
                     onState('streaming');
                 }
             });
 
             void screen.play().catch(error => {
-                if (!signal.aborted) onState('error', `视频播放失败：${String(error)}`);
+                fail(`视频播放失败：${String(error)}`);
             });
         };
 
         peer.onconnectionstatechange = () => {
             if (peer.connectionState === 'failed' && !signal.aborted) {
-                onState('error', 'WebRTC 连接失败，可能无法 UDP 打洞');
+                fail('WebRTC 连接失败，可能无法 UDP 打洞');
             }
         };
 
@@ -160,37 +204,22 @@ export function startRemote(
 
             await peer.setLocalDescription(offer);
 
-            if (peer.iceGatheringState !== 'complete') {
-                await new Promise<void>((resolve, reject) => {
-                    const timeout = setTimeout(() => reject(new Error('ICE 候选收集超时')), 15000);
+            if (signal.aborted) return;
 
-                    peer.addEventListener('icegatheringstatechange', () => {
-                        if (peer.iceGatheringState === 'complete') {
-                            clearTimeout(timeout);
-                            resolve();
-                        }
-                    });
-
-                    signal.addEventListener('abort', () => { clearTimeout(timeout); reject(new Error('已取消')); }, { once: true });
-                });
-            }
-
-            const response = await fetch('/offer', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ id: sessionId, width: MAX_VIDEO_WIDTH, height: MAX_VIDEO_HEIGHT, sdp: peer.localDescription!.sdp }),
-                signal,
+            send({
+                type: 'offer', video_id: videoId,
+                width: MAX_VIDEO_WIDTH, height: MAX_VIDEO_HEIGHT,
+                sdp: offer.sdp,
             });
+            offerSent = true;
 
-            if (!response.ok) throw new Error(await response.text());
-
-            await peer.setRemoteDescription(await response.json() as RTCSessionDescriptionInit);
-        } catch (error) {
-            if (!signal.aborted) {
-                videoStarted = false;
-                peer.close();
-                onState('error', `WebRTC 视频连接失败：${error instanceof Error ? error.message : String(error)}`);
+            for (const candidate of pendingCandidates) {
+                send({ type: 'ice', video_id: videoId, candidate });
             }
+
+            pendingCandidates.length = 0;
+        } catch (error) {
+            fail(`WebRTC 视频连接失败：${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -303,6 +332,14 @@ export function startRemote(
             }
 
             if (message.type === 'cursor') placeKeyboard(message.point);
+
+            if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
+
+            if (message.type === 'video_error') {
+                videoAbort?.abort();
+                videoStarted = false;
+                onState('error', message.message);
+            }
         };
 
         socket.onclose = event => {
