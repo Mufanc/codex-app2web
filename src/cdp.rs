@@ -56,9 +56,7 @@ pub(crate) struct CdpSession {
     pub(crate) ready: watch::Receiver<bool>,
 }
 
-pub(crate) fn connect() -> CdpSession {
-    let cdp_port = std::env::var("CODEX_CDP_PORT").unwrap_or_else(|_| "9341".into());
-
+pub(crate) fn connect(cdp_port: u16) -> CdpSession {
     let (commands, command_rx) = mpsc::channel(64);
     let (frame_tx, frames) = watch::channel(None);
     let (cursor_tx, cursor) = watch::channel(None);
@@ -77,7 +75,7 @@ pub(crate) fn connect() -> CdpSession {
 }
 
 async fn reconnect(
-    cdp_port: String,
+    cdp_port: u16,
     mut commands: mpsc::Receiver<CdpInput>,
     frames: watch::Sender<Option<Frame>>,
     cursor: watch::Sender<Option<Value>>,
@@ -88,7 +86,7 @@ async fn reconnect(
     loop {
         while commands.try_recv().is_ok() {}
 
-        let result = run_connection(&cdp_port, &mut commands, &frames, &cursor, &ready).await;
+        let result = run_connection(cdp_port, &mut commands, &frames, &cursor, &ready).await;
         let was_connected = *ready.borrow();
 
         ready.send_replace(false);
@@ -117,7 +115,7 @@ fn next_retry(delay: Duration) -> Duration {
 }
 
 async fn run_connection(
-    cdp_port: &str,
+    cdp_port: u16,
     commands: &mut mpsc::Receiver<CdpInput>,
     frames: &watch::Sender<Option<Frame>>,
     cursor: &watch::Sender<Option<Value>>,

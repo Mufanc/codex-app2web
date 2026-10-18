@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{
@@ -47,7 +49,12 @@ struct Session {
     takeover: Option<bool>,
 }
 
-pub(crate) async fn serve(cdp: CdpSession) -> anyhow::Result<()> {
+//noinspection HttpUrlsUsage
+pub(crate) async fn serve(
+    cdp: CdpSession,
+    listen: Option<SocketAddr>,
+    unix_socket: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let CdpSession {
         frames,
         cursor,
@@ -70,10 +77,19 @@ pub(crate) async fn serve(cdp: CdpSession) -> anyhow::Result<()> {
         .route("/assets/{*path}", get(asset))
         .route("/ws", get(ws))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8787").await?;
 
-    println!("CodexApp2Web: http://127.0.0.1:8787");
-    axum::serve(listener, app).await?;
+    if let Some(path) = unix_socket {
+        let listener = tokio::net::UnixListener::bind(&path)?;
+
+        println!("CodexApp2Web: unix:{}", path.display());
+        axum::serve(listener, app).await?;
+    } else {
+        let address = listen.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8787)));
+        let listener = tokio::net::TcpListener::bind(address).await?;
+
+        println!("CodexApp2Web: http://{}", listener.local_addr()?);
+        axum::serve(listener, app).await?;
+    }
 
     Ok(())
 }
@@ -97,8 +113,7 @@ async fn ws(
     Query(session): Query<Session>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if headers.get("origin").and_then(|value| value.to_str().ok()) != Some("http://127.0.0.1:8787")
-    {
+    if !same_origin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -116,6 +131,29 @@ async fn ws(
         .on_upgrade(move |socket| {
             viewer(socket, state, session.id, session.takeover == Some(true))
         }))
+}
+
+fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<Uri>().ok())
+    else {
+        return false;
+    };
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+
+    matches!(origin.scheme_str(), Some("http" | "https"))
+        && origin
+            .authority()
+            .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(host))
+        && origin.path() == "/"
+        && origin.query().is_none()
 }
 
 async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bool) {
@@ -262,6 +300,30 @@ async fn send_size(socket: &mut WebSocket, frame: Frame) -> Result<(), axum::Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_must_match_request_host() {
+        for (host, origin, expected) in [
+            ("127.0.0.1:8787", "http://127.0.0.1:8787", true),
+            ("desktop.example.com", "https://desktop.example.com", true),
+            ("[::1]:9000", "http://[::1]:9000", true),
+            ("localhost:8787", "http://localhost:9000", false),
+            ("desktop.example.com", "https://evil.example", false),
+            ("desktop.example.com", "null", false),
+            (
+                "desktop.example.com",
+                "https://desktop.example.com/path",
+                false,
+            ),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, host.parse().unwrap());
+            headers.insert(header::ORIGIN, origin.parse().unwrap());
+            assert_eq!(same_origin(&headers), expected, "{origin}");
+        }
+
+        assert!(!same_origin(&HeaderMap::new()));
+    }
 
     #[test]
     fn websocket_accepts_trickle_signals_and_existing_input() {

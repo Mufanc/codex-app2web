@@ -10,14 +10,19 @@ axum = { version = "0.8", features = ["ws"] }
 base64 = "0.23"
 bytes = "1"
 chromiumoxide = "0.9"
+clap = { version = "4.6", features = ["derive", "env"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 include_dir = "0.7"
+libc = "0.2"
 mime_guess = "2.0"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSEnumerator", "NSString", "NSURL"] }
 rand = "0.10"
 rtc = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shlex = "2.0"
 tokio = { version = "1", features = ["full"] }
 video_toolbox = { package = "shiguredo_video_toolbox", version = "2026.1" }
 webrtc = "0.21"
