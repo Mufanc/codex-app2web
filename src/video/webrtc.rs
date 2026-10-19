@@ -2,6 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use bytes::Bytes;
+use rtc::media::Sample;
+
 use rtc::interceptor::{BandwidthEstimator, EstimatorStats, Gcc, PacketReport, Registry};
 use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::interceptor_registry::{
@@ -12,44 +15,28 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
     RtpCodecKind,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
-    RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription,
+    RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionIceEvent,
+    RTCPeerConnectionState, RTCSessionDescription,
 };
 use webrtc::rtp_transceiver::RtpSender;
 
-use crate::server::AppState;
-use crate::video;
+use super::{EncoderSession, FRAME_INTERVAL, INITIAL_BITRATE, MAX_BITRATE, MIN_BITRATE};
+use crate::cdp::Frame;
+use crate::protocol::{ServerMessage, VideoErrorCode, VideoSignal};
 
-const INITIAL_BITRATE: f64 = 3_000_000.0;
-const MIN_BITRATE: f64 = 150_000.0;
-const MAX_BITRATE: f64 = 20_000_000.0;
 const MAX_SDP_BYTES: usize = 128 * 1024;
 const MAX_CANDIDATE_BYTES: usize = 4096;
 const MAX_VIDEO_ID_BYTES: usize = 64;
 
-#[derive(Deserialize)]
-pub(crate) struct VideoOffer {
+#[derive(Clone)]
+pub(crate) struct Signal {
     video_id: String,
-    width: u32,
-    height: u32,
-    sdp: String,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum VideoSignal {
-    Offer(VideoOffer),
-    Ice {
-        video_id: String,
-        candidate: Option<RTCIceCandidateInit>,
-    },
+    pub(crate) message: ServerMessage,
 }
 
 pub(crate) struct VideoSession {
@@ -60,9 +47,13 @@ pub(crate) struct VideoSession {
 }
 
 impl VideoSession {
-    pub(crate) async fn close(self) {
+    pub(crate) fn accepts(&self, signal: &Signal) -> bool {
+        self.id == signal.video_id
+    }
+
+    pub(crate) async fn close(mut self) {
         self.stop.send_replace(true);
-        if let Some(task) = self.task {
+        if let Some(task) = self.task.take() {
             let _ = task.await;
         } else {
             let _ = self.peer.close().await;
@@ -70,10 +61,28 @@ impl VideoSession {
     }
 }
 
+impl Drop for VideoSession {
+    fn drop(&mut self) {
+        self.stop.send_replace(true);
+    }
+}
+
+struct PeerCleanup(Option<Arc<dyn PeerConnection>>);
+
+impl Drop for PeerCleanup {
+    fn drop(&mut self) {
+        if let Some(peer) = self.0.take() {
+            tokio::spawn(async move {
+                let _ = peer.close().await;
+            });
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ConnectionHandler {
     video_id: String,
-    signals: broadcast::Sender<Value>,
+    signals: broadcast::Sender<Signal>,
     connected: watch::Sender<RTCPeerConnectionState>,
 }
 
@@ -83,9 +92,13 @@ impl PeerConnectionEventHandler for ConnectionHandler {
         match event.candidate.to_json() {
             Ok(mut candidate) => {
                 candidate.sdp_mid = None;
-                let _ = self.signals.send(json!({
-                    "type": "ice", "video_id": self.video_id, "candidate": candidate,
-                }));
+                let _ = self.signals.send(Signal {
+                    video_id: self.video_id.clone(),
+                    message: ServerMessage::Ice {
+                        video_id: self.video_id.clone(),
+                        candidate: Some(candidate),
+                    },
+                });
             }
             Err(error) => eprintln!("ICE candidate serialization failed: {error}"),
         }
@@ -93,9 +106,13 @@ impl PeerConnectionEventHandler for ConnectionHandler {
 
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
         if state == RTCIceGatheringState::Complete {
-            let _ = self.signals.send(json!({
-                "type": "ice", "video_id": self.video_id, "candidate": null,
-            }));
+            let _ = self.signals.send(Signal {
+                video_id: self.video_id.clone(),
+                message: ServerMessage::Ice {
+                    video_id: self.video_id.clone(),
+                    candidate: None,
+                },
+            });
         }
     }
 
@@ -112,7 +129,11 @@ struct ReportingEstimator {
 
 impl ReportingEstimator {
     fn new() -> (Self, Arc<AtomicU64>) {
-        let inner = Gcc::new(INITIAL_BITRATE, MIN_BITRATE, MAX_BITRATE);
+        let inner = Gcc::new(
+            INITIAL_BITRATE as f64,
+            MIN_BITRATE as f64,
+            MAX_BITRATE as f64,
+        );
         let target = Arc::new(AtomicU64::new(inner.target_bitrate() as u64));
         (
             Self {
@@ -154,12 +175,11 @@ impl BandwidthEstimator for ReportingEstimator {
 }
 
 pub(crate) async fn signal(
-    state: &AppState,
-    controller_id: &str,
+    frames: watch::Receiver<Option<Frame>>,
     session: &mut Option<VideoSession>,
     message: VideoSignal,
-    signals: &broadcast::Sender<Value>,
-) -> anyhow::Result<Option<Value>> {
+    signals: &broadcast::Sender<Signal>,
+) -> anyhow::Result<Option<ServerMessage>> {
     match message {
         VideoSignal::Offer(request) => {
             anyhow::ensure!(
@@ -178,8 +198,7 @@ pub(crate) async fn signal(
             }
 
             let (next, answer) = start_session(
-                state.clone(),
-                controller_id.to_owned(),
+                frames,
                 request.video_id.clone(),
                 request.width & !1,
                 request.height & !1,
@@ -190,9 +209,10 @@ pub(crate) async fn signal(
 
             *session = Some(next);
 
-            Ok(Some(json!({
-                "type": "answer", "video_id": request.video_id, "description": answer,
-            })))
+            Ok(Some(ServerMessage::Answer {
+                video_id: request.video_id,
+                description: Box::new(answer),
+            }))
         }
         VideoSignal::Ice {
             video_id,
@@ -215,13 +235,12 @@ pub(crate) async fn signal(
 }
 
 async fn start_session(
-    state: AppState,
-    id: String,
+    frames: watch::Receiver<Option<Frame>>,
     video_id: String,
     width: u32,
     height: u32,
     offer: RTCSessionDescription,
-    signals: broadcast::Sender<Value>,
+    signals: broadcast::Sender<Signal>,
 ) -> anyhow::Result<(VideoSession, RTCSessionDescription)> {
     let codec = RTCRtpCodecParameters {
         rtp_codec: RTCRtpCodec {
@@ -232,7 +251,6 @@ async fn start_session(
             rtcp_feedback: vec![],
         },
         payload_type: 98,
-        ..Default::default()
     };
     let mut media_engine = MediaEngine::default();
 
@@ -248,7 +266,7 @@ async fn start_session(
     let registry = register_default_interceptors(registry, &mut media_engine)?;
     let configuration = RTCConfigurationBuilder::new()
         .with_ice_servers(vec![RTCIceServer {
-            urls: serde_json::from_str(include_str!("../shared/stun-servers.json"))?,
+            urls: serde_json::from_str(include_str!("../../shared/stun-servers.json"))?,
             ..Default::default()
         }])
         .build();
@@ -259,13 +277,14 @@ async fn start_session(
         .with_interceptor_registry(registry)
         .with_handler(Arc::new(ConnectionHandler {
             video_id: video_id.clone(),
-            signals,
+            signals: signals.clone(),
             connected: connected_tx,
         }))
         .with_udp_addrs(vec!["0.0.0.0:0"])
         .build()
         .await?;
     let peer: Arc<dyn PeerConnection> = Arc::new(peer);
+    let mut cleanup = PeerCleanup(Some(peer.clone()));
     let setup = async {
         let ssrc = rand::random::<u32>();
         let track = Arc::new(TrackLocalStaticSample::new(
@@ -305,6 +324,7 @@ async fn start_session(
         Ok(result) => result,
         Err(error) => {
             let _ = peer.close().await;
+            cleanup.0 = None;
             return Err(error);
         }
     };
@@ -316,31 +336,14 @@ async fn start_session(
         stop,
     };
 
-    let controller = state.controller.lock().await;
-
-    if controller.as_deref() != Some(id.as_str()) {
-        drop(controller);
-        session.close().await;
-        anyhow::bail!("Controller changed during negotiation");
-    }
-
-    state
-        .video_changed
-        .send_modify(|generation| *generation = generation.wrapping_add(1));
-
-    let generation = *state.video_changed.borrow();
-
-    drop(controller);
-
+    let video_id = session.id.clone();
     session.task = Some(tokio::spawn(async move {
         if let Err(error) = run_session(
             sender,
             track,
             ssrc,
             target_bitrate,
-            state,
-            id,
-            generation,
+            frames,
             connected,
             stopped,
             width,
@@ -349,11 +352,18 @@ async fn start_session(
         .await
         {
             eprintln!("WebRTC video: {error:#}");
+            let _ = signals.send(Signal {
+                video_id,
+                message: ServerMessage::VideoError {
+                    code: VideoErrorCode::Encoder,
+                },
+            });
         }
 
         let _ = peer.close().await;
     }));
 
+    cleanup.0 = None;
     Ok((session, answer))
 }
 
@@ -363,43 +373,25 @@ async fn run_session(
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
     target_bitrate: Arc<AtomicU64>,
-    state: AppState,
-    id: String,
-    generation: u64,
+    frames: watch::Receiver<Option<Frame>>,
     mut connected: watch::Receiver<RTCPeerConnectionState>,
     mut stopped: watch::Receiver<bool>,
     width: u32,
     height: u32,
 ) -> anyhow::Result<()> {
-    let mut ownership = state.controller_changed.subscribe();
-    let mut video_changed = state.video_changed.subscribe();
-    let mut ready = state.ready.clone();
-
     loop {
-        if ownership.borrow().as_deref() != Some(id.as_str())
-            || *video_changed.borrow() != generation
-            || !*ready.borrow()
-            || *stopped.borrow()
-        {
+        if *stopped.borrow() {
             return Ok(());
         }
-
-        let connection_state = *connected.borrow_and_update();
-
-        match connection_state {
+        match *connected.borrow_and_update() {
             RTCPeerConnectionState::Connected => break,
-            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
-                return Ok(());
-            }
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => return Ok(()),
             _ => {}
         }
 
         tokio::select! {
             _ = stopped.changed() => return Ok(()),
             result = connected.changed() => { result?; }
-            result = ownership.changed() => { result?; }
-            result = video_changed.changed() => { result?; }
-            result = ready.changed() => { result?; }
         }
     }
 
@@ -411,47 +403,38 @@ async fn run_session(
         .first()
         .ok_or_else(|| anyhow::anyhow!("HEVC codec was not negotiated"))?
         .payload_type;
-    let (stop_tx, stop_rx) = watch::channel(false);
-    let mut video_task = tokio::spawn(video::stream(
-        state.frames.clone(),
-        video::Output::WebRtc {
-            track,
-            ssrc,
-            payload_type,
-        },
-        width,
-        height,
-        target_bitrate,
-        stop_rx,
-    ));
-
-    loop {
-        tokio::select! {
-            _ = stopped.changed() => break,
-            result = &mut video_task => {
-                result??;
-                break;
-            }
-            result = ownership.changed() => {
-                if result.is_err() || ownership.borrow_and_update().as_deref() != Some(id.as_str()) { break; }
-            }
-            result = video_changed.changed() => {
-                if result.is_err() || *video_changed.borrow_and_update() != generation { break; }
-            }
-            result = ready.changed() => {
-                if result.is_err() || !*ready.borrow_and_update() { break; }
-            }
-            result = connected.changed() => {
-                if result.is_err() || matches!(*connected.borrow_and_update(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) { break; }
+    let mut encoder = EncoderSession::start(frames, width, height, target_bitrate);
+    let result = async {
+        loop {
+            if *stopped.borrow() { break; }
+            tokio::select! {
+                _ = stopped.changed() => break,
+                result = connected.changed() => {
+                    if result.is_err() || matches!(*connected.borrow_and_update(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) { break; }
+                }
+                sample = encoder.next() => {
+                    let sample = sample?;
+                    let send = async {
+                        let gap = sample.duration.saturating_sub(FRAME_INTERVAL);
+                        if !gap.is_zero() {
+                            // Advance RTP time over idle periods before sending the next frame.
+                            track.sample_writer(ssrc, payload_type).write_sample(&Sample {
+                                data: Bytes::new(), duration: gap, ..Sample::new(Instant::now())
+                            }).await?;
+                        }
+                        track.sample_writer(ssrc, payload_type).write_sample(&Sample {
+                            data: Bytes::from(sample.data), duration: FRAME_INTERVAL, ..Sample::new(Instant::now())
+                        }).await
+                    };
+                    tokio::select! {
+                        _ = stopped.changed() => break,
+                        result = send => { result?; }
+                    }
+                }
             }
         }
-    }
-
-    stop_tx.send_replace(true);
-
-    if !video_task.is_finished() {
-        let _ = video_task.await;
-    }
-
-    Ok(())
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let closed = encoder.close().await;
+    result.and(closed)
 }

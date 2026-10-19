@@ -5,22 +5,20 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use image::imageops::{self, FilterType};
 use image::{ImageBuffer, Rgb, RgbImage};
-use rtc::media::Sample;
 use tokio::sync::{mpsc, watch};
 use video_toolbox::{
     CodecConfig, EncodeOptions, EncodedFrame, Encoder, EncoderConfig, FrameData, HevcEncoderConfig,
     HevcProfile, PixelFormat,
 };
-use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 
 use crate::cdp::Frame;
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(67);
+pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(67);
 const FRAME_RATE: u32 = 15;
 const KEYFRAME_INTERVAL: u32 = 60;
 const ENCODE_TIMEOUT: Duration = Duration::from_millis(500);
-const MIN_BITRATE: u64 = 150_000;
-const MAX_BITRATE: u64 = 20_000_000;
+pub(super) const MIN_BITRATE: u64 = 150_000;
+pub(super) const MAX_BITRATE: u64 = 20_000_000;
 
 pub(crate) struct EncodedSample {
     pub(crate) data: Vec<u8>,
@@ -30,18 +28,61 @@ pub(crate) struct EncodedSample {
     pub(crate) keyframe: bool,
 }
 
-pub(crate) enum Output {
-    WebRtc {
-        track: Arc<TrackLocalStaticSample>,
-        ssrc: u32,
-        payload_type: u8,
-    },
-    WebSocket(mpsc::Sender<EncodedSample>),
+pub(crate) mod webrtc;
+pub(crate) mod websocket;
+
+pub(super) const INITIAL_BITRATE: u64 = 3_000_000;
+
+pub(super) struct EncoderSession {
+    samples: mpsc::Receiver<EncodedSample>,
+    stop: watch::Sender<bool>,
+    task: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
-pub(crate) async fn stream(
+impl EncoderSession {
+    pub(super) fn start(
+        frames: watch::Receiver<Option<Frame>>,
+        width: u32,
+        height: u32,
+        bitrate: Arc<AtomicU64>,
+    ) -> Self {
+        let (tx, samples) = mpsc::channel(1);
+        let (stop, stopped) = watch::channel(false);
+        let task = tokio::spawn(stream(frames, tx, width, height, bitrate, stopped));
+        Self {
+            samples,
+            stop,
+            task: Some(task),
+        }
+    }
+
+    pub(super) async fn next(&mut self) -> anyhow::Result<EncodedSample> {
+        if let Some(sample) = self.samples.recv().await {
+            return Ok(sample);
+        }
+
+        if let Some(task) = self.task.as_mut() {
+            let result = task.await;
+            self.task = None;
+            result??;
+        }
+
+        anyhow::bail!("Encoder stopped")
+    }
+
+    pub(super) async fn close(mut self) -> anyhow::Result<()> {
+        self.stop.send_replace(true);
+        drop(self.samples);
+        if let Some(task) = self.task.take() {
+            task.await??;
+        }
+        Ok(())
+    }
+}
+
+async fn stream(
     frames: watch::Receiver<Option<Frame>>,
-    output: Output,
+    output: mpsc::Sender<EncodedSample>,
     max_width: u32,
     max_height: u32,
     target_bitrate: Arc<AtomicU64>,
@@ -50,57 +91,33 @@ pub(crate) async fn stream(
     let (jpeg_tx, jpeg_rx) = mpsc::channel(1);
     let (sample_tx, mut sample_rx) = mpsc::channel::<EncodedSample>(1);
     let worker = tokio::task::spawn_blocking(move || {
-        if let Err(error) = encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate) {
-            eprintln!("HEVC encoder: {error:#}");
-        }
+        encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate)
     });
     let mut ticker = tokio::time::interval(FRAME_INTERVAL);
     let mut frames = frames;
+    frames.mark_changed();
     let mut stop = stop;
-    let mut previous_jpeg = None;
 
     let result = async {
         loop {
             tokio::select! {
                 _ = stop.changed() => break,
                 _ = ticker.tick() => {
-                    let frame = frames.borrow_and_update().clone();
-                    if let Some(frame) = frame {
-                        if previous_jpeg.as_ref() != Some(&frame.jpeg) {
-                            if jpeg_tx.try_send(frame.jpeg.clone()).is_ok() {
-                                previous_jpeg = Some(frame.jpeg);
+                    if frames.has_changed().unwrap_or(false) {
+                        let frame = frames.borrow_and_update().clone();
+                        if let Some(frame) = frame {
+                            if jpeg_tx.try_send(frame.jpeg).is_err() {
+                                frames.mark_changed();
                             }
                         }
                     }
                 }
                 sample = sample_rx.recv() => {
                     let Some(sample) = sample else { break };
-                    let Output::WebRtc { track, ssrc, payload_type } = &output else {
-                        if let Output::WebSocket(tx) = &output {
-                            tokio::select! {
-                                _ = stop.changed() => break,
-                                result = tx.send(sample) => { if result.is_err() { break; } }
-                            }
-                        }
-                        continue;
-                    };
-                    let EncodedSample { data, duration, .. } = sample;
-                    let gap = duration.saturating_sub(FRAME_INTERVAL);
-
-                    if !gap.is_zero() {
-                        // Packetizer advances RTP time after each sample, so skip idle time before this frame.
-                        track.sample_writer(*ssrc, *payload_type).write_sample(&Sample {
-                            data: Bytes::new(),
-                            duration: gap,
-                            ..Sample::new(Instant::now())
-                        }).await?;
+                    tokio::select! {
+                        _ = stop.changed() => break,
+                        result = output.send(sample) => { if result.is_err() { break; } }
                     }
-
-                    track.sample_writer(*ssrc, *payload_type).write_sample(&Sample {
-                        data: Bytes::from(data),
-                        duration: FRAME_INTERVAL,
-                        ..Sample::new(Instant::now())
-                    }).await?;
                 }
             }
         }
@@ -111,13 +128,13 @@ pub(crate) async fn stream(
 
     drop(jpeg_tx);
     drop(sample_rx);
-    worker.await?;
+    worker.await??;
 
     result
 }
 
 fn encode(
-    mut jpeg_rx: mpsc::Receiver<Vec<u8>>,
+    mut jpeg_rx: mpsc::Receiver<Bytes>,
     sample_tx: mpsc::Sender<EncodedSample>,
     max_width: u32,
     max_height: u32,

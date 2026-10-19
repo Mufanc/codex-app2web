@@ -1,23 +1,12 @@
 import { t } from './i18n.ts';
-
 import { createWebSocketVideo } from './websocket-video.ts';
-
-import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
+import { createInput } from './input.ts';
+import { startWebRtc } from './webrtc-video.ts';
+import { MAX_VIDEO_WIDTH, MAX_VIDEO_HEIGHT, type ClientMessage, type ServerMessage, type VideoSignal } from './protocol.ts';
 
 export type VideoTransport = 'WebRTC' | 'WebSocket';
+export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'error';
 
-export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'unsupported' | 'error';
-
-type VideoSignal =
-    | { type: 'answer'; video_id: string; description: RTCSessionDescriptionInit }
-    | { type: 'ice'; video_id: string; candidate: RTCIceCandidateInit | null };
-
-type Point = { x: number; y: number };
-type Picture = { left: number; top: number; width: number; height: number };
-
-const MAX_VIDEO_WIDTH = 4096;
-const MAX_VIDEO_HEIGHT = 2160;
-const VIDEO_CONNECT_TIMEOUT_MS = 8_000;
 const FALLBACK_TIMEOUT_MS = 15_000;
 
 export function startRemote(
@@ -29,8 +18,6 @@ export function startRemote(
     onTransport: (transport: VideoTransport | null) => void = () => {},
 ) {
     const defaultTitle = document.title;
-    const sessionId = crypto.randomUUID();
-    const pressed = new Set<string>();
 
     let sourceWidth = 0;
     let sourceHeight = 0;
@@ -43,47 +30,8 @@ export function startRemote(
     let receiveVideoSignal: ((message: VideoSignal) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    let composing = false;
     let disposed = false;
-
-    function pictureRect(): Picture | null {
-        const size = decodedSize;
-
-        if (!size || !sourceWidth || !sourceHeight) return null;
-
-        const area = stage.getBoundingClientRect();
-        const videoScale = Math.min(area.width / size[0], area.height / size[1]);
-        const width = size[0] * videoScale;
-        const height = size[1] * videoScale;
-
-        return { left: (area.width - width) / 2, top: (area.height - height) / 2, width, height };
-    }
-
-    function coordinates(event: PointerEvent | WheelEvent, clamp = false): Point | null {
-        const rect = pictureRect();
-
-        if (!rect) return null;
-
-        const area = stage.getBoundingClientRect();
-        const x = event.clientX - area.left - rect.left;
-        const y = event.clientY - area.top - rect.top;
-
-        if (!clamp && (x < 0 || y < 0 || x > rect.width || y > rect.height)) return null;
-
-        return {
-            x: Math.max(0, Math.min(rect.width, x)) / rect.width * sourceWidth,
-            y: Math.max(0, Math.min(rect.height, y)) / rect.height * sourceHeight,
-        };
-    }
-
-    function placeKeyboard(point: Point | null) {
-        const rect = pictureRect();
-
-        if (!rect || !point) return;
-
-        keyboard.style.left = `${Math.max(0, Math.min(stage.clientWidth - 2, rect.left + point.x / sourceWidth * rect.width))}px`;
-        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - 20, rect.top + point.y / sourceHeight * rect.height))}px`;
-    }
+    let generation = 0;
 
     function onScreenResize() {
         decodedSize = screen.videoWidth && screen.videoHeight ? [screen.videoWidth, screen.videoHeight] : null;
@@ -91,7 +39,9 @@ export function startRemote(
 
     screen.addEventListener('resize', onScreenResize);
 
-    function send(message: object) {
+    const input = createInput(stage, keyboard, () => ({ sourceWidth, sourceHeight, decodedSize }), send);
+
+    function send(message: ClientMessage) {
         if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     }
 
@@ -109,7 +59,7 @@ export function startRemote(
                 sentViewport = [viewportWidth, viewportHeight];
             }
 
-            if (sourceWidth && sourceHeight) void startVideo();
+            if (sourceWidth && sourceHeight) startVideo();
         }, immediate ? 0 : 1000);
     }
 
@@ -150,7 +100,7 @@ export function startRemote(
         }
     }
 
-    async function startVideo() {
+    function startVideo() {
         if (videoStarted && !videoAbort?.signal.aborted) return;
 
         videoAbort?.abort();
@@ -170,212 +120,58 @@ export function startRemote(
         onTransport('WebRTC');
         onState('connecting', t('connection.webrtcConnecting'));
 
-        const peer = new RTCPeerConnection({
-            iceServers: [{ urls: stunServers }],
-        });
-
-        const videoId = crypto.randomUUID();
-        const pendingCandidates: (RTCIceCandidateInit | null)[] = [];
-        let offerSent = false;
-        let hasUdpCandidate = false;
-        let incomingSignals = Promise.resolve();
-        const timeout = setTimeout(() => fail(t('connection.timeout')), VIDEO_CONNECT_TIMEOUT_MS);
-
-        function fail(message: string) {
-            if (signal.aborted) return;
-
-            console.info(t('connection.fallbackLog', { error: message }));
-            startFallback();
-        }
-
+        videoStarted = true;
         signal.addEventListener('abort', () => {
-            clearTimeout(timeout);
             receiveVideoSignal = undefined;
-            peer.close();
-            screen.srcObject = null;
             decodedSize = null;
         }, { once: true });
 
-        peer.onicecandidate = event => {
-            if (signal.aborted) return;
-
-            const candidate = event.candidate?.toJSON() ?? null;
-
-            if (candidate && / udp /i.test(candidate.candidate ?? '')) hasUdpCandidate = true;
-            if (!candidate && !hasUdpCandidate) {
-                fail(t('connection.noUdp'));
-                return;
-            }
-
-            if (offerSent) send({ type: 'ice', video_id: videoId, candidate });
-            else pendingCandidates.push(candidate);
-        };
-
-        receiveVideoSignal = message => {
-            if (signal.aborted || message.video_id !== videoId) return;
-
-            // Candidates must wait for the preceding answer to finish being applied.
-            incomingSignals = incomingSignals.then(async () => {
-                if (signal.aborted) return;
-
-                if (message.type === 'answer') await peer.setRemoteDescription(message.description);
-                else await peer.addIceCandidate(message.candidate ?? undefined);
-            }).catch(error => fail(t('connection.signalingError', { error: String(error) })));
-        };
-
-        videoStarted = true;
-
-        const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
-
-        transceiver.setCodecPreferences(hevc);
-
-        peer.ontrack = event => {
-            screen.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-
-            screen.requestVideoFrameCallback(() => {
-                if (!signal.aborted) {
-                    clearTimeout(timeout);
-                    onScreenResize();
-                    onState('streaming');
-                }
-            });
-
-            void screen.play().catch(error => {
-                fail(t('connection.playbackError', { error: String(error) }));
-            });
-        };
-
-        peer.onconnectionstatechange = () => {
-            if (peer.connectionState === 'failed' && !signal.aborted) {
-                fail(t('connection.webrtcFailed'));
-            }
-        };
-
         try {
-            const offer = await peer.createOffer();
-
-            await peer.setLocalDescription(offer);
-
-            if (signal.aborted) return;
-
-            send({
-                type: 'offer', video_id: videoId,
-                width: MAX_VIDEO_WIDTH, height: MAX_VIDEO_HEIGHT,
-                sdp: offer.sdp,
+            receiveVideoSignal = startWebRtc(screen, signal, hevc, send, () => {
+                onScreenResize();
+                onState('streaming');
+            }, message => {
+                console.info(t('connection.fallbackLog', { error: message }));
+                startFallback();
             });
-            offerSent = true;
-
-            for (const candidate of pendingCandidates) {
-                send({ type: 'ice', video_id: videoId, candidate });
-            }
-
-            pendingCandidates.length = 0;
         } catch (error) {
-            fail(t('connection.webrtcError', { error: error instanceof Error ? error.message : String(error) }));
+            console.info(error);
+            startFallback();
         }
     }
-
-    function modifiers(event: KeyboardEvent) {
-        return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-        if (event.isComposing || composing || event.key === 'Process' || event.key === 'Dead') return;
-        if (!(event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1)) return;
-
-        event.preventDefault();
-        pressed.add(event.code);
-
-        send({ type: 'key', action: 'keyDown', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
-    }
-
-    function onKeyUp(event: KeyboardEvent) {
-        if (!pressed.delete(event.code)) return;
-
-        event.preventDefault();
-        send({ type: 'key', action: 'keyUp', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
-    }
-
-    function sendKeyboardText() {
-        if (!keyboard.value) return;
-
-        send({ type: 'text', text: keyboard.value });
-        keyboard.value = '';
-    }
-
-    function onCompositionStart() { composing = true; }
-
-    function onCompositionEnd() { composing = false; setTimeout(sendKeyboardText, 0); }
-
-    function onInput(event: Event) {
-        if (!(event as InputEvent).isComposing && !composing) sendKeyboardText();
-    }
-
-    function onPointerDown(event: PointerEvent) {
-        const point = coordinates(event);
-
-        if (!point) return;
-
-        event.preventDefault();
-        placeKeyboard(point);
-        keyboard.focus({ preventScroll: true });
-        stage.setPointerCapture(event.pointerId);
-        send({ type: 'mouse', action: 'mousePressed', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
-    }
-
-    function onPointerMove(event: PointerEvent) {
-        const point = coordinates(event, stage.hasPointerCapture(event.pointerId));
-
-        if (point) send({ type: 'mouse', action: 'mouseMoved', ...point, button: 'none', buttons: event.buttons });
-    }
-
-    function onPointerUp(event: PointerEvent) {
-        const point = coordinates(event, true);
-
-        if (point) send({ type: 'mouse', action: 'mouseReleased', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
-    }
-
-    function onWheel(event: WheelEvent) {
-        const point = coordinates(event);
-
-        if (!point) return;
-
-        event.preventDefault();
-        send({ type: 'wheel', ...point, delta_x: event.deltaX, delta_y: event.deltaY });
-    }
-
-    function onContextMenu(event: MouseEvent) { event.preventDefault(); }
-
-    keyboard.addEventListener('keydown', onKeyDown);
-    keyboard.addEventListener('keyup', onKeyUp);
-    keyboard.addEventListener('compositionstart', onCompositionStart);
-    keyboard.addEventListener('compositionend', onCompositionEnd);
-    keyboard.addEventListener('input', onInput);
-
-    stage.addEventListener('pointerdown', onPointerDown);
-    stage.addEventListener('pointermove', onPointerMove);
-    stage.addEventListener('pointerup', onPointerUp);
-    stage.addEventListener('wheel', onWheel, { passive: false });
-    stage.addEventListener('contextmenu', onContextMenu);
 
     function connect(claim = false) {
         if (disposed) return;
 
+        generation++;
+        clearTimeout(reconnectTimer);
+        clearTimeout(resizeTimer);
+        input.reset(false);
+        videoAbort?.abort();
+        videoStarted = false;
+        sentViewport = null;
+        const previous = socket;
+        socket = undefined;
+        previous?.close();
+        document.title = defaultTitle;
         onTransport(null);
         onState('connecting');
-        socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?id=${sessionId}${claim ? '&takeover=true' : ''}`);
+        const current = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${claim ? '?takeover=true' : ''}`);
+        socket = current;
 
         socket.binaryType = 'arraybuffer';
 
-        socket.onopen = () => resizeVideo(true);
+        socket.onopen = () => { if (!disposed && socket === current) resizeVideo(true); };
 
         socket.onmessage = event => {
+            if (disposed || socket !== current) return;
             if (event.data instanceof ArrayBuffer) {
                 receiveVideoFrame?.(event.data);
                 return;
             }
 
-            const message = JSON.parse(event.data);
+            let message: ServerMessage;
+            try { message = JSON.parse(event.data); } catch { return; }
 
             if (message.type === 'size') {
                 const firstSize = !sourceWidth || !sourceHeight;
@@ -393,7 +189,7 @@ export function startRemote(
 
             if (message.type === 'title' && typeof message.title === 'string') document.title = message.title.trim() || defaultTitle;
 
-            if (message.type === 'cursor') placeKeyboard(message.point);
+            if (message.type === 'cursor') input.placeKeyboard(message.point);
 
             if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
 
@@ -405,17 +201,18 @@ export function startRemote(
 
                 videoAbort?.abort();
                 videoStarted = false;
-                onState('error', message.message);
+                onState('error', t(`errors.${message.code}`));
             }
         };
 
         socket.onclose = event => {
+            if (disposed || socket !== current) return;
+            socket = undefined;
+            input.reset(false);
             document.title = defaultTitle;
             videoAbort?.abort();
             videoStarted = false;
             sentViewport = null;
-
-            if (disposed) return;
 
             const occupied = event.reason === 'occupied' || event.reason === 'taken over';
 
@@ -427,15 +224,16 @@ export function startRemote(
 
     async function refreshSession() {
         if (disposed) return;
+        const attempt = generation;
 
         try {
             // Reload the session cookie after a server restart without reloading the video UI.
             const response = await fetch('/', { credentials: 'same-origin', cache: 'no-store' });
 
             if (!response.ok) throw new Error('Session refresh failed');
-            if (!disposed) connect();
+            if (!disposed && attempt === generation) connect();
         } catch {
-            if (!disposed) reconnectTimer = setTimeout(refreshSession, 1000);
+            if (!disposed && attempt === generation) reconnectTimer = setTimeout(refreshSession, 1000);
         }
     }
 
@@ -445,6 +243,7 @@ export function startRemote(
         claim: () => connect(true),
 
         dispose: () => {
+            input.dispose();
             disposed = true;
             document.title = defaultTitle;
 
@@ -455,18 +254,6 @@ export function startRemote(
             screen.removeEventListener('resize', onScreenResize);
             videoAbort?.abort();
             socket?.close();
-
-            keyboard.removeEventListener('keydown', onKeyDown);
-            keyboard.removeEventListener('keyup', onKeyUp);
-            keyboard.removeEventListener('compositionstart', onCompositionStart);
-            keyboard.removeEventListener('compositionend', onCompositionEnd);
-            keyboard.removeEventListener('input', onInput);
-
-            stage.removeEventListener('pointerdown', onPointerDown);
-            stage.removeEventListener('pointermove', onPointerMove);
-            stage.removeEventListener('pointerup', onPointerUp);
-            stage.removeEventListener('wheel', onWheel);
-            stage.removeEventListener('contextmenu', onContextMenu);
         },
     };
 }

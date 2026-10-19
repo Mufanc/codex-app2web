@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use chromiumoxide::browser::Browser;
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchMouseEventParams, InsertTextParams,
@@ -16,6 +17,9 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
+mod held_input;
+use self::held_input::HeldInput;
+
 #[cfg(test)]
 mod cursor_test;
 
@@ -29,7 +33,7 @@ const CURSOR_BINDING: &str = "__codexApp2WebCaret";
 
 #[derive(Clone)]
 pub(crate) struct Frame {
-    pub(crate) jpeg: Vec<u8>,
+    pub(crate) jpeg: Bytes,
     pub(crate) width: f64,
     pub(crate) height: f64,
 }
@@ -39,18 +43,32 @@ pub(crate) enum CdpInput {
     Key(DispatchKeyEventParams),
     Text(InsertTextParams),
     Resize(u32, u32),
-    Stop,
+    Reset,
 }
 
+pub(crate) struct Command {
+    pub(crate) owner: u64,
+    pub(crate) input: CdpInput,
+}
+
+#[derive(Clone)]
 pub(crate) struct CdpSession {
     pub(crate) frames: watch::Receiver<Option<Frame>>,
     pub(crate) cursor: watch::Receiver<Option<Value>>,
     pub(crate) title: watch::Receiver<String>,
-    pub(crate) commands: mpsc::Sender<CdpInput>,
+    pub(crate) commands: mpsc::Sender<Command>,
     pub(crate) ready: watch::Receiver<bool>,
 }
 
-pub(crate) fn connect(cdp_port: u16) -> CdpSession {
+#[derive(Clone)]
+struct Updates {
+    frames: watch::Sender<Option<Frame>>,
+    cursor: watch::Sender<Option<Value>>,
+    title: watch::Sender<String>,
+    ready: watch::Sender<bool>,
+}
+
+pub(crate) fn connect(cdp_port: u16, ownership: watch::Receiver<Option<u64>>) -> CdpSession {
     let (commands, command_rx) = mpsc::channel(64);
     let (frame_tx, frames) = watch::channel(None);
     let (cursor_tx, cursor) = watch::channel(None);
@@ -58,7 +76,15 @@ pub(crate) fn connect(cdp_port: u16) -> CdpSession {
     let (ready_tx, ready) = watch::channel(false);
 
     tokio::spawn(reconnect(
-        cdp_port, command_rx, frame_tx, cursor_tx, title_tx, ready_tx,
+        cdp_port,
+        command_rx,
+        Updates {
+            frames: frame_tx,
+            cursor: cursor_tx,
+            title: title_tx,
+            ready: ready_tx,
+        },
+        ownership,
     ));
 
     CdpSession {
@@ -72,24 +98,30 @@ pub(crate) fn connect(cdp_port: u16) -> CdpSession {
 
 async fn reconnect(
     cdp_port: u16,
-    mut commands: mpsc::Receiver<CdpInput>,
-    frames: watch::Sender<Option<Frame>>,
-    cursor: watch::Sender<Option<Value>>,
-    title: watch::Sender<String>,
-    ready: watch::Sender<bool>,
+    mut commands: mpsc::Receiver<Command>,
+    updates: Updates,
+    ownership: watch::Receiver<Option<u64>>,
 ) {
     let mut delay = Duration::from_secs(1);
+    let mut held = HeldInput::default();
 
     loop {
         while commands.try_recv().is_ok() {}
 
-        let result = run_connection(cdp_port, &mut commands, &frames, &cursor, &title, &ready).await;
-        let was_connected = *ready.borrow();
+        let result = run_connection(
+            cdp_port,
+            &mut commands,
+            &updates,
+            ownership.clone(),
+            &mut held,
+        )
+        .await;
+        let was_connected = *updates.ready.borrow();
 
-        ready.send_replace(false);
-        frames.send_replace(None);
-        cursor.send_replace(None);
-        title.send_replace(String::new());
+        updates.ready.send_replace(false);
+        updates.frames.send_replace(None);
+        updates.cursor.send_replace(None);
+        updates.title.send_replace(String::new());
 
         if was_connected {
             delay = Duration::from_secs(1);
@@ -114,11 +146,10 @@ fn next_retry(delay: Duration) -> Duration {
 
 async fn run_connection(
     cdp_port: u16,
-    commands: &mut mpsc::Receiver<CdpInput>,
-    frames: &watch::Sender<Option<Frame>>,
-    cursor: &watch::Sender<Option<Value>>,
-    title: &watch::Sender<String>,
-    ready: &watch::Sender<bool>,
+    commands: &mut mpsc::Receiver<Command>,
+    updates: &Updates,
+    ownership: watch::Receiver<Option<u64>>,
+    held: &mut HeldInput,
 ) -> anyhow::Result<()> {
     let (mut browser, mut handler) =
         Browser::connect(format!("http://127.0.0.1:{cdp_port}")).await?;
@@ -158,7 +189,7 @@ async fn run_connection(
             .await
             .map_err(|_| anyhow::anyhow!("Codex page did not attach within 5 seconds"))?;
 
-            run_cdp(page, commands, frames.clone(), cursor.clone(), title.clone(), ready.clone()).await
+            run_cdp(page, commands, updates.clone(), ownership, held).await
         } => result,
         _ = &mut handler_task => Err(anyhow::anyhow!("CDP transport closed")),
     };
@@ -168,12 +199,17 @@ async fn run_connection(
 
 async fn run_cdp(
     page: Page,
-    commands: &mut mpsc::Receiver<CdpInput>,
-    frames: watch::Sender<Option<Frame>>,
-    cursor: watch::Sender<Option<Value>>,
-    title: watch::Sender<String>,
-    ready: watch::Sender<bool>,
+    commands: &mut mpsc::Receiver<Command>,
+    updates: Updates,
+    mut ownership: watch::Receiver<Option<u64>>,
+    held: &mut HeldInput,
 ) -> anyhow::Result<()> {
+    let Updates {
+        frames,
+        cursor,
+        title,
+        ready,
+    } = updates;
     let mut events = page.event_listener::<EventScreencastFrame>().await?;
 
     let mut caret_events = page.event_listener::<EventBindingCalled>().await?;
@@ -184,6 +220,7 @@ async fn run_cdp(
     page.execute(AddBindingParams::new(TITLE_BINDING)).await?;
     evaluate_script(&page, TITLE_SCRIPT).await?;
 
+    held.release(&page).await?;
     ready.send_replace(true);
     eprintln!("CDP connected: Codex page ready");
 
@@ -192,9 +229,25 @@ async fn run_cdp(
     let mut window_size = None;
     let mut window_changed_at: Option<Instant> = None;
 
+    let mut owner = None;
+    let mut pending_command = None;
     let result = async {
     loop {
+        let current = *ownership.borrow_and_update();
+        if current != owner {
+            held.release(&page).await?;
+            evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
+            cursor.send_replace(None);
+            if capture_size.take().is_some() { page.execute(StopScreencastParams::default()).await?; }
+            frames.send_replace(None);
+            viewport_size = None;
+            window_size = None;
+            window_changed_at = None;
+            owner = current;
+        }
+
         tokio::select! {
+            _ = ownership.changed() => continue,
             Some(event) = caret_events.next() => {
                 if event.name == TITLE_BINDING {
                     title.send_if_modified(|current| {
@@ -237,10 +290,14 @@ async fn run_cdp(
                 }
                 window_changed_at = None;
             }
-            Some(command) = commands.recv() => {
-                match command {
-                    CdpInput::Mouse(params) => { if let Err(error) = page.execute(params).await { eprintln!("Mouse input failed: {error}"); } }
-                    CdpInput::Key(params) => { if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
+            Some(command) = async {
+                if pending_command.is_some() { pending_command.take() } else { commands.recv().await }
+            } => {
+                if Some(command.owner) != *ownership.borrow() { continue; }
+                if Some(command.owner) != owner { pending_command = Some(command); continue; }
+                match command.input {
+                    CdpInput::Mouse(params) => { held.mouse(&params); if let Err(error) = page.execute(params).await { eprintln!("Mouse input failed: {error}"); } }
+                    CdpInput::Key(params) => { held.key(&params); if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
                     CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { eprintln!("Text input failed: {error}"); } }
                     CdpInput::Resize(width, height) => {
                         if viewport_size.is_none() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
@@ -251,16 +308,7 @@ async fn run_cdp(
                             configure_capture(&page, &frames, &mut capture_size, desired).await?;
                         }
                     }
-                    CdpInput::Stop => {
-                        evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
-                        cursor.send_replace(None);
-                        if capture_size.take().is_some() { page.execute(StopScreencastParams::default()).await?; }
-
-                        frames.send_replace(None);
-                        viewport_size = None;
-                        window_size = None;
-                        window_changed_at = None;
-                    }
+                    CdpInput::Reset => { held.release(&page).await?; }
                 }
             }
             event = events.next() => {
@@ -278,8 +326,8 @@ async fn run_cdp(
                         window_changed_at = Some(Instant::now());
                     }
 
-                    if frames.borrow().as_ref().is_none_or(|old| old.jpeg != jpeg) {
-                        frames.send_replace(Some(Frame { jpeg, width, height }));
+                    if owner.is_some() && frames.borrow().as_ref().is_none_or(|old| old.jpeg.as_ref() != jpeg || old.width != width || old.height != height) {
+                        frames.send_replace(Some(Frame { jpeg: jpeg.into(), width, height }));
                     }
                 }
 
@@ -290,6 +338,7 @@ async fn run_cdp(
 
     Ok::<_, anyhow::Error>(())
     }.await;
+    let _ = held.release(&page).await;
     let _ = evaluate_script(&page, CURSOR_STOP_SCRIPT).await;
     let _ = evaluate_script(&page, TITLE_STOP_SCRIPT).await;
     result

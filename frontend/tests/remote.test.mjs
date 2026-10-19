@@ -37,10 +37,10 @@ function setup(t, viewport, source, decoded = source, Peer) {
         disconnect() {}
     });
 
-    global('document', { title: 'CodexApp2Web' });
+    global('document', Object.assign(new EventTarget(), { title: 'CodexApp2Web' }));
     global('location', { protocol: 'http:', host: 'localhost' });
     global('devicePixelRatio', 1);
-    global('window', { RTCPeerConnection: Peer });
+    global('window', Object.assign(new EventTarget(), { RTCPeerConnection: Peer }));
     global('RTCPeerConnection', Peer);
     global('RTCRtpReceiver', { getCapabilities: () => ({ codecs: [{ mimeType: 'video/H265' }] }) });
 
@@ -70,7 +70,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
     screen.dispatchEvent(new Event('resize'));
 
     return {
-        stage, screen, keyboard, size, dispose: remote.dispose,
+        stage, screen, keyboard, size, dispose: remote.dispose, claim: remote.claim,
 
         get socket() { return socket; },
 
@@ -247,4 +247,39 @@ test('task title sync falls back to the original title and resets on disconnect'
     title('Task C');
     view.dispose();
     assert.equal(document.title, 'CodexApp2Web');
+});
+
+test('superseded socket callbacks cannot stop or rename the current session', t => {
+    const remote = setup(t, [800, 600], [960, 540]);
+    const previous = remote.socket;
+    remote.claim();
+    const current = remote.socket;
+    assert.notEqual(current, previous);
+
+    current.onmessage({ data: JSON.stringify({ type: 'title', title: 'Current task' }) });
+    previous.onmessage({ data: JSON.stringify({ type: 'title', title: 'Old task' }) });
+    previous.onclose({ reason: 'taken over' });
+    assert.equal(document.title, 'Current task');
+
+    t.mock.timers.tick(1000);
+    assert.equal(remote.socket, current);
+});
+
+test('losing focus releases input and cancels unfinished composition', t => {
+    const remote = setup(t, [800, 600], [960, 540]);
+    const key = type => Object.assign(new Event(type, { cancelable: true }), {
+        key: 'Shift', code: 'ShiftLeft', keyCode: 16, shiftKey: true,
+    });
+    remote.keyboard.dispatchEvent(key('keydown'));
+    remote.keyboard.value = 'unfinished';
+    remote.keyboard.dispatchEvent(new Event('compositionend'));
+    window.dispatchEvent(new Event('blur'));
+    t.mock.timers.tick(1);
+    remote.keyboard.dispatchEvent(key('keyup'));
+
+    assert.equal(remote.keyboard.value, '');
+    assert.deepEqual(remote.socket.sent.filter(message => ['key', 'reset', 'text'].includes(message.type)).map(message => message.type), ['key', 'reset']);
+
+    remote.stage.dispatchEvent(new Event('pointercancel'));
+    assert.equal(remote.socket.sent.at(-1).type, 'reset');
 });

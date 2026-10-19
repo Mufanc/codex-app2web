@@ -4,7 +4,6 @@
         "streaming": "Connected",
         "occupied": "Desktop in use",
         "disconnected": "Reconnecting…",
-        "unsupported": "Decoder unsupported",
         "error": "Video unavailable",
         "transport": "Connected · {{transport}}"
     },
@@ -48,5 +47,10 @@
         "decodeError": "WebSocket video decoding failed: {{error}}",
         "incomplete": "Incomplete video frame",
         "missingKeyframe": "Video size changed without a keyframe"
+    },
+    "errors": {
+        "signaling_failed": "Unable to negotiate video",
+        "encoder_failed": "Video encoding failed",
+        "transport_failed": "Video transport failed"
     }
 }

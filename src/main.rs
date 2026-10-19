@@ -2,9 +2,10 @@ mod app;
 mod cdp;
 mod cli;
 mod input;
+mod protocol;
 mod server;
+mod session;
 mod video;
-mod webrtc_video;
 
 use clap::Parser;
 
@@ -15,5 +16,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let port = app::resolve_port(cli.cdp_port)?;
 
-    server::serve(cdp::connect(port), cli.listen, cli.unix_socket).await
+    let controller = session::controller::Controller::new();
+    let cdp = cdp::connect(port, controller.subscribe());
+
+    server::serve(cdp, controller, cli.listen, cli.unix_socket).await
 }

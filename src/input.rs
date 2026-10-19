@@ -18,6 +18,7 @@ const SINGLE_CLICK_COUNT: i64 = 1;
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Input {
+    Reset,
     Mouse {
         action: String,
         x: f64,
@@ -49,6 +50,7 @@ pub(crate) enum Input {
 
 pub(crate) fn input_command(input: Input) -> Option<CdpInput> {
     match input {
+        Input::Reset => Some(CdpInput::Reset),
         Input::Mouse {
             action,
             x,

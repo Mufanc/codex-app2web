@@ -4,7 +4,6 @@
         "streaming": "已连接",
         "occupied": "桌面正在被控制",
         "disconnected": "连接中断，正在重试",
-        "unsupported": "浏览器不支持视频解码",
         "error": "画面加载失败",
         "transport": "已连接 · {{transport}}"
     },
@@ -48,5 +47,10 @@
         "decodeError": "WebSocket 视频解码失败：{{error}}",
         "incomplete": "视频帧不完整",
         "missingKeyframe": "视频尺寸变化缺少关键帧"
+    },
+    "errors": {
+        "signaling_failed": "视频协商失败",
+        "encoder_failed": "视频编码失败",
+        "transport_failed": "视频传输失败"
     }
 }

@@ -22,7 +22,7 @@ export function createWebSocketVideo(
     screen.after(canvas);
     screen.hidden = true;
     let size = '';
-    let pendingSequence = 0;
+    const pending = new Map<number, number>();
     let timestamp = 0;
     const decoder = new VideoDecoder({
         output(frame) {
@@ -36,7 +36,11 @@ export function createWebSocketVideo(
 
                 context.drawImage(frame, 0, 0);
                 onFrame(frame.displayWidth, frame.displayHeight);
-                acknowledge(pendingSequence);
+                const sequence = pending.get(frame.timestamp);
+                if (sequence !== undefined) {
+                    pending.delete(frame.timestamp);
+                    acknowledge(sequence);
+                }
             } finally {
                 frame.close();
             }
@@ -46,6 +50,7 @@ export function createWebSocketVideo(
 
     signal.addEventListener('abort', () => {
         if (decoder.state !== 'closed') decoder.close();
+        pending.clear();
         canvas.remove();
         screen.hidden = false;
     }, { once: true });
@@ -70,9 +75,10 @@ export function createWebSocketVideo(
                 size = nextSize;
             }
 
-            pendingSequence = sequence;
+            const frameTimestamp = timestamp++;
+            pending.set(frameTimestamp, sequence);
             decoder.decode(new EncodedVideoChunk({
-                type: keyframe ? 'key' : 'delta', timestamp: timestamp++, data: new Uint8Array(data, HEADER_BYTES),
+                type: keyframe ? 'key' : 'delta', timestamp: frameTimestamp, data: new Uint8Array(data, HEADER_BYTES),
             }));
         } catch (error) {
             onError(t('video.decodeError', { error: String(error) }));

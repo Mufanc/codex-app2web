@@ -50,13 +50,16 @@ test('WebSocket decoder handles keyframes, resize, acknowledgments and disposal'
     assert.equal(chunks[0].type, 'key');
     assert.deepEqual(acknowledgments, []);
     let closed = 0;
-    callbacks.output({displayWidth:1280, displayHeight:720, close() { closed++; }});
+    callbacks.output({timestamp:chunks[0].timestamp, displayWidth:1280, displayHeight:720, close() { closed++; }});
     assert.deepEqual(acknowledgments, [1]);
     assert.deepEqual(frames, [[1280,720]]);
     receive(packet(2, 1280, 720, false));
     assert.equal(configs.length, 1);
     receive(packet(3, 640, 360, true));
     assert.equal(configs.length, 2);
+    callbacks.output({ timestamp: chunks[1].timestamp, displayWidth: 1280, displayHeight: 720, close() {} });
+    callbacks.output({ timestamp: chunks[2].timestamp, displayWidth: 640, displayHeight: 360, close() {} });
+    assert.deepEqual(acknowledgments, [1, 2, 3]);
     receive(packet(4, 800, 600, false));
     assert.equal(errors.length, 1);
     abort.abort();
@@ -64,5 +67,5 @@ test('WebSocket decoder handles keyframes, resize, acknowledgments and disposal'
     assert.equal(closed, 2);
     assert.equal(canvas.removed, true);
     assert.equal(screen.hidden, false);
-    assert.deepEqual(acknowledgments, [1]);
+    assert.deepEqual(acknowledgments, [1, 2, 3]);
 });
