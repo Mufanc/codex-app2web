@@ -58,9 +58,13 @@ impl Fallback {
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("WebSocket encoder stopped"))?;
+
         self.sequence = self.sequence.wrapping_add(1);
+
         let packet = packet(self.sequence, sample);
+
         self.pending = Some((self.sequence, Instant::now(), packet.len()));
+
         Ok(packet)
     }
 
@@ -69,6 +73,7 @@ impl Fallback {
             if sequence != expected {
                 return;
             }
+
             self.pending = None;
 
             // Delivery plus decode latency bounds the amount of video we can sustain over TCP.
@@ -79,6 +84,7 @@ impl Fallback {
             } else {
                 current + current / 20
             };
+
             self.bitrate
                 .store(next.clamp(MIN_BITRATE, MAX_BITRATE), Ordering::Relaxed);
         }
@@ -87,6 +93,7 @@ impl Fallback {
     pub(super) async fn close(self) {
         self.stop.send_replace(true);
         drop(self.samples);
+
         if let Err(error) = self.task.await {
             eprintln!("WebSocket video task: {error}");
         }
@@ -96,6 +103,7 @@ impl Fallback {
 fn packet(sequence: u32, sample: EncodedSample) -> Bytes {
     // Big endian: sequence u32, width u16, height u16, keyframe u8, Annex B access unit.
     let mut bytes = BytesMut::with_capacity(9 + sample.data.len());
+
     bytes.put_u32(sequence);
     bytes.put_u16(sample.width as u16);
     bytes.put_u16(sample.height as u16);
