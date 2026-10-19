@@ -36,23 +36,30 @@ pub(crate) fn resolve_port(explicit: Option<u16>) -> anyhow::Result<u16> {
             .bundleURL()
             .and_then(|url| url.path())
             .context("Cannot locate the running Codex app; specify --cdp-port manually")?;
+
         paths.insert(PathBuf::from(path.to_string()).canonicalize()?);
     }
 
-    ensure!(paths.len() <= 1 && running.len() <= 1,
+    ensure!(
+        paths.len() <= 1 && running.len() <= 1,
         "Multiple Codex installations or instances found. Start the desired app manually and specify --cdp-port.\n{}",
-        paths.iter().map(|path| launch_command(path, DEFAULT_CDP_PORT)).collect::<anyhow::Result<Vec<_>>>()?.join("\n"));
+        paths
+            .iter()
+            .map(|path| launch_command(path, DEFAULT_CDP_PORT))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .join("\n")
+    );
 
-    let path = paths.into_iter().next().context(
-        "Codex is not installed or registered with macOS. Start it manually and specify --cdp-port",
-    )?;
+    let path = paths
+        .into_iter()
+        .next()
+        .context("Codex is not installed or registered with macOS. Start it manually and specify --cdp-port")?;
     let command = launch_command(&path, DEFAULT_CDP_PORT)?;
 
     if let Some(app) = running.firstObject() {
         let args = process::arguments(app.processIdentifier())
             .context("Cannot read Codex launch arguments; specify --cdp-port manually")?;
-        let port = debugging_port(&args)
-            .with_context(|| format!("Quit Codex manually, then run:\n{command}"))?;
+        let port = debugging_port(&args).with_context(|| format!("Quit Codex manually, then run:\n{command}"))?;
 
         if let Some(port) = port {
             eprintln!("Detected Codex CDP port: {port}");
@@ -72,6 +79,7 @@ pub(crate) fn resolve_port(explicit: Option<u16>) -> anyhow::Result<u16> {
         .arg(format!("--remote-debugging-port={DEFAULT_CDP_PORT}"))
         .status()
         .context("Failed to launch Codex")?;
+
     ensure!(status.success(), "open failed to launch Codex: {status}");
 
     Ok(DEFAULT_CDP_PORT)
@@ -84,22 +92,21 @@ fn confirm_start() -> io::Result<bool> {
 
     eprint!("Start Codex with remote debugging enabled? [y/N] ");
     io::stderr().flush()?;
+
     let mut answer = String::new();
+
     io::stdin().read_line(&mut answer)?;
 
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
 fn launch_command(path: &Path, port: u16) -> anyhow::Result<String> {
-    let path = path
-        .to_str()
-        .context("Cannot display a non-UTF-8 app path as a shell command")?;
+    let path = path.to_str().context("Cannot display a non-UTF-8 app path as a shell command")?;
     let path = shlex::try_quote(path)?;
 
-    Ok(format!("open -na {path} --args --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"))
+    Ok(format!(
+        "open -na {path} --args --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"
+    ))
 }
 
 fn debugging_port(args: &[String]) -> anyhow::Result<Option<u16>> {
@@ -112,23 +119,15 @@ fn debugging_port(args: &[String]) -> anyhow::Result<Option<u16>> {
         }
 
         let value = if arg == "--remote-debugging-port" {
-            Some(
-                args.next()
-                    .context("Missing remote debugging port value")?
-                    .as_str(),
-            )
+            Some(args.next().context("Missing remote debugging port value")?.as_str())
         } else {
             arg.strip_prefix("--remote-debugging-port=")
         };
 
         if let Some(value) = value {
-            let port = value
-                .parse::<u16>()
-                .context("Invalid remote debugging port")?;
-            ensure!(
-                port != 0,
-                "Dynamic remote debugging ports (0) are not supported"
-            );
+            let port = value.parse::<u16>().context("Invalid remote debugging port")?;
+
+            ensure!(port != 0, "Dynamic remote debugging ports (0) are not supported");
             ensure!(
                 result.is_none(),
                 "Multiple remote debugging port arguments; specify --cdp-port manually"
@@ -150,28 +149,19 @@ mod tests {
 
     #[test]
     fn detects_only_valid_explicit_debugging_ports() {
-        assert_eq!(
-            parse(&["Codex", "--remote-debugging-port=9341"]).unwrap(),
-            Some(9341)
-        );
+        assert_eq!(parse(&["Codex", "--remote-debugging-port=9341"]).unwrap(), Some(9341));
         assert_eq!(
             parse(&["Codex", "--remote-debugging-port", "9342"]).unwrap(),
             Some(9342)
         );
-        assert_eq!(
-            parse(&["Codex", "--", "--remote-debugging-port=9341"]).unwrap(),
-            None
-        );
+        assert_eq!(parse(&["Codex", "--", "--remote-debugging-port=9341"]).unwrap(), None);
         assert_eq!(parse(&["Codex"]).unwrap(), None);
 
         for args in [
             vec!["--remote-debugging-port=0"],
             vec!["--remote-debugging-port=65536"],
             vec!["--remote-debugging-port"],
-            vec![
-                "--remote-debugging-port=9341",
-                "--remote-debugging-port=9342",
-            ],
+            vec!["--remote-debugging-port=9341", "--remote-debugging-port=9342"],
         ] {
             assert!(parse(&args).is_err());
         }

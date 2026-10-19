@@ -28,27 +28,13 @@ mod tests {
         assert!(Cli::try_parse_from(["app", "--cdp-port", "0"]).is_err());
         assert!(Cli::try_parse_from(["app", "--cdp-port", "65536"]).is_err());
         assert!(Cli::try_parse_from(["app", "--listen", "bad"]).is_err());
-        assert!(Cli::try_parse_from([
-            "app",
-            "--listen",
-            "127.0.0.1:8787",
-            "--unix-socket",
-            "/tmp/test.sock",
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from(["app", "--listen", "127.0.0.1:8787", "--unix-socket", "/tmp/test.sock",]).is_err()
+        );
 
-        let cli = Cli::try_parse_from([
-            "app",
-            "--cdp-port",
-            "9341",
-            "--unix-socket",
-            "/tmp/test.sock",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["app", "--cdp-port", "9341", "--unix-socket", "/tmp/test.sock"]).unwrap();
         assert_eq!(cli.cdp_port, Some(9341));
         assert!(cli.listen.is_none());
-        assert!(!Cli::try_parse_from(["app", "--help"])
-            .unwrap_err()
-            .use_stderr());
+        assert!(!Cli::try_parse_from(["app", "--help"]).unwrap_err().use_stderr());
     }
 }

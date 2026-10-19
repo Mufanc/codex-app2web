@@ -7,8 +7,8 @@ use image::imageops::{self, FilterType};
 use image::{ImageBuffer, Rgb, RgbImage};
 use tokio::sync::{mpsc, watch};
 use video_toolbox::{
-    CodecConfig, EncodeOptions, EncodedFrame, Encoder, EncoderConfig, FrameData, HevcEncoderConfig,
-    HevcProfile, PixelFormat,
+    CodecConfig, EncodeOptions, EncodedFrame, Encoder, EncoderConfig, FrameData, HevcEncoderConfig, HevcProfile,
+    PixelFormat,
 };
 
 use crate::cdp::Frame;
@@ -49,6 +49,7 @@ impl EncoderSession {
         let (tx, samples) = mpsc::channel(1);
         let (stop, stopped) = watch::channel(false);
         let task = tokio::spawn(stream(frames, tx, width, height, bitrate, stopped));
+
         Self {
             samples,
             stop,
@@ -73,9 +74,11 @@ impl EncoderSession {
     pub(super) async fn close(mut self) -> anyhow::Result<()> {
         self.stop.send_replace(true);
         drop(self.samples);
+
         if let Some(task) = self.task.take() {
             task.await??;
         }
+
         Ok(())
     }
 }
@@ -90,12 +93,12 @@ async fn stream(
 ) -> anyhow::Result<()> {
     let (jpeg_tx, jpeg_rx) = mpsc::channel(1);
     let (sample_tx, mut sample_rx) = mpsc::channel::<EncodedSample>(1);
-    let worker = tokio::task::spawn_blocking(move || {
-        encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate)
-    });
+    let worker = tokio::task::spawn_blocking(move || encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate));
     let mut ticker = tokio::time::interval(FRAME_INTERVAL);
     let mut frames = frames;
+
     frames.mark_changed();
+
     let mut stop = stop;
 
     let result = async {
@@ -114,6 +117,7 @@ async fn stream(
                 }
                 sample = sample_rx.recv() => {
                     let Some(sample) = sample else { break };
+
                     tokio::select! {
                         _ = stop.changed() => break,
                         result = output.send(sample) => { if result.is_err() { break; } }
@@ -148,6 +152,7 @@ fn encode(
         let Ok(image) = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg) else {
             continue;
         };
+
         let image = image.to_rgb8();
         let (width, height) = encoder_size(image.dimensions(), (max_width, max_height));
 
@@ -155,9 +160,7 @@ fn encode(
             continue;
         }
 
-        let target = target_bitrate
-            .load(Ordering::Relaxed)
-            .clamp(MIN_BITRATE, MAX_BITRATE);
+        let target = target_bitrate.load(Ordering::Relaxed).clamp(MIN_BITRATE, MAX_BITRATE);
         let mut force_key_frame = false;
 
         if encoding.is_none() {
@@ -171,8 +174,7 @@ fn encode(
 
         if config.width != width
             || config.height != height
-            || (target.abs_diff(current) > current / 4
-                && last_bitrate_change.elapsed() >= Duration::from_secs(2))
+            || (target.abs_diff(current) > current / 4 && last_bitrate_change.elapsed() >= Duration::from_secs(2))
         {
             config.width = width;
             config.height = height;
@@ -183,8 +185,7 @@ fn encode(
         }
 
         let (rgb, rgb_stride) = prepare_rgb(image, width, height);
-        let mut yuv =
-            yuv::YuvPlanarImageMut::<u8>::alloc(width, height, yuv::YuvChromaSubsampling::Yuv420);
+        let mut yuv = yuv::YuvPlanarImageMut::<u8>::alloc(width, height, yuv::YuvChromaSubsampling::Yuv420);
 
         yuv::rgb_to_yuv420(
             &mut yuv,
@@ -208,15 +209,19 @@ fn encode(
             if let Some(frame) = encoder.next_frame()? {
                 break frame;
             }
+
             if Instant::now() >= deadline {
                 anyhow::bail!("VideoToolbox did not return an encoded frame");
             }
+
             std::thread::sleep(Duration::from_millis(1));
         };
+
         let now = Instant::now();
-        let duration =
-            previous_frame.map_or(FRAME_INTERVAL, |then: Instant| now.duration_since(then));
+        let duration = previous_frame.map_or(FRAME_INTERVAL, |then: Instant| now.duration_since(then));
+
         previous_frame = Some(now);
+
         let keyframe = frame.keyframe;
         let data = annex_b(frame)?;
 
@@ -233,6 +238,7 @@ fn encode(
             break;
         }
     }
+
     Ok(())
 }
 
@@ -241,10 +247,7 @@ fn encoder_size(source: (u32, u32), limit: (u32, u32)) -> (u32, u32) {
         return (source.0 & !1, source.1 & !1);
     }
 
-    let scale = f64::min(
-        limit.0 as f64 / source.0 as f64,
-        limit.1 as f64 / source.1 as f64,
-    );
+    let scale = f64::min(limit.0 as f64 / source.0 as f64, limit.1 as f64 / source.1 as f64);
 
     (
         ((source.0 as f64 * scale) as u32) & !1,
@@ -259,10 +262,7 @@ fn prepare_rgb(image: RgbImage, width: u32, height: u32) -> (RgbImage, u32) {
         return (image, src_width * 3);
     }
 
-    let scale = f64::min(
-        width as f64 / src_width as f64,
-        height as f64 / src_height as f64,
-    );
+    let scale = f64::min(width as f64 / src_width as f64, height as f64 / src_height as f64);
     let scaled_width = ((src_width as f64 * scale) as u32).max(1);
     let scaled_height = ((src_height as f64 * scale) as u32).max(1);
     let scaled = imageops::resize(&image, scaled_width, scaled_height, FilterType::Triangle);
@@ -365,8 +365,7 @@ mod tests {
         let (rgb, stride) = prepare_rgb(image, 16, 16);
         assert_eq!(rgb.dimensions(), (16, 17));
         assert_eq!(stride, 48);
-        let mut yuv =
-            yuv::YuvPlanarImageMut::<u8>::alloc(16, 16, yuv::YuvChromaSubsampling::Yuv420);
+        let mut yuv = yuv::YuvPlanarImageMut::<u8>::alloc(16, 16, yuv::YuvChromaSubsampling::Yuv420);
         yuv::rgb_to_yuv420(
             &mut yuv,
             rgb.as_raw(),
@@ -396,28 +395,14 @@ mod tests {
         let mut encoder = Encoder::new(config.clone()).unwrap();
         let y = vec![16; (width * height) as usize];
         let uv = vec![128; (width * height / 4) as usize];
-        let image = FrameData::I420 {
-            y: &y,
-            u: &uv,
-            v: &uv,
-        };
-        encoder
-            .encode(
-                &image,
-                &EncodeOptions {
-                    force_key_frame: true,
-                },
-            )
-            .unwrap();
+        let image = FrameData::I420 { y: &y, u: &uv, v: &uv };
+        encoder.encode(&image, &EncodeOptions { force_key_frame: true }).unwrap();
         let deadline = Instant::now() + ENCODE_TIMEOUT;
         let frame = loop {
             if let Some(frame) = encoder.next_frame().unwrap() {
                 break frame;
             }
-            assert!(
-                Instant::now() < deadline,
-                "VideoToolbox did not produce HEVC"
-            );
+            assert!(Instant::now() < deadline, "VideoToolbox did not produce HEVC");
             std::thread::sleep(Duration::from_millis(1));
         };
         assert!(frame.keyframe);
@@ -435,10 +420,7 @@ mod tests {
                 assert!(!annex_b(frame).unwrap().is_empty());
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "reconfigured encoder produced no frame"
-            );
+            assert!(Instant::now() < deadline, "reconfigured encoder produced no frame");
             std::thread::sleep(Duration::from_millis(1));
         }
 
@@ -454,9 +436,7 @@ mod tests {
                     u: &resized_uv,
                     v: &resized_uv,
                 },
-                &EncodeOptions {
-                    force_key_frame: true,
-                },
+                &EncodeOptions { force_key_frame: true },
             )
             .unwrap();
         let deadline = Instant::now() + ENCODE_TIMEOUT;
@@ -466,10 +446,7 @@ mod tests {
                 assert!(!annex_b(frame).unwrap().is_empty());
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "resized encoder produced no frame"
-            );
+            assert!(Instant::now() < deadline, "resized encoder produced no frame");
             std::thread::sleep(Duration::from_millis(1));
         }
     }

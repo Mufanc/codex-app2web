@@ -22,9 +22,7 @@ pub(super) fn issue(headers: &HeaderMap, key: Key) -> SignedCookieJar {
 }
 
 pub(super) fn valid(headers: &HeaderMap, key: Key) -> bool {
-    SignedCookieJar::from_headers(headers, key)
-        .get(COOKIE_NAME)
-        .is_some()
+    SignedCookieJar::from_headers(headers, key).get(COOKIE_NAME).is_some()
 }
 
 fn is_loopback(headers: &HeaderMap) -> bool {
@@ -34,9 +32,9 @@ fn is_loopback(headers: &HeaderMap) -> bool {
         .and_then(|value| format!("http://{value}").parse::<Uri>().ok());
 
     // Public hosts require HTTPS; do not trust forwarded headers to disable Secure.
-    host.as_ref().and_then(Uri::host).is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
-    })
+    host.as_ref()
+        .and_then(Uri::host)
+        .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]")
 }
 
 #[cfg(test)]
@@ -83,10 +81,7 @@ mod tests {
             headers.insert("x-forwarded-proto", "http".parse().unwrap());
             let response = issue(&headers, Key::generate()).into_response();
             assert_eq!(
-                response.headers()[header::SET_COOKIE]
-                    .to_str()
-                    .unwrap()
-                    .contains("Secure"),
+                response.headers()[header::SET_COOKIE].to_str().unwrap().contains("Secure"),
                 secure
             );
         }

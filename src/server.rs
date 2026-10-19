@@ -64,6 +64,7 @@ fn router(cdp: CdpSession, controller: Controller) -> Router {
         cdp,
         controller,
     };
+
     Router::new()
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
@@ -74,12 +75,12 @@ fn router(cdp: CdpSession, controller: Controller) -> Router {
 async fn asset(uri: Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
+
     let Some(file) = FRONTEND.get_file(path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let content_type = mime_guess::from_path(path)
-        .first_raw()
-        .unwrap_or("application/octet-stream");
+
+    let content_type = mime_guess::from_path(path).first_raw().unwrap_or("application/octet-stream");
 
     ([(header::CONTENT_TYPE, content_type)], file.contents()).into_response()
 }
@@ -106,14 +107,7 @@ async fn ws(
 
     Ok(ws
         .max_message_size(MAX_CLIENT_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
-            session::viewer(
-                socket,
-                state.cdp,
-                state.controller,
-                session.takeover == Some(true),
-            )
-        }))
+        .on_upgrade(move |socket| session::viewer(socket, state.cdp, state.controller, session.takeover == Some(true))))
 }
 
 fn same_origin(headers: &HeaderMap) -> bool {
@@ -124,17 +118,13 @@ fn same_origin(headers: &HeaderMap) -> bool {
     else {
         return false;
     };
-    let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-    else {
+
+    let Some(host) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else {
         return false;
     };
 
     matches!(origin.scheme_str(), Some("http" | "https"))
-        && origin
-            .authority()
-            .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(host))
+        && origin.authority().is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(host))
         && origin.path() == "/"
         && origin.query().is_none()
 }
@@ -152,11 +142,7 @@ mod tests {
             ("localhost:8787", "http://localhost:9000", false),
             ("desktop.example.com", "https://evil.example", false),
             ("desktop.example.com", "null", false),
-            (
-                "desktop.example.com",
-                "https://desktop.example.com/path",
-                false,
-            ),
+            ("desktop.example.com", "https://desktop.example.com/path", false),
         ] {
             let mut headers = HeaderMap::new();
             headers.insert(header::HOST, host.parse().unwrap());

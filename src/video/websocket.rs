@@ -45,12 +45,12 @@ impl WebSocketVideo {
         // A large keyframe may exceed the byte budget, but must be the only frame in flight.
         self.pending.is_empty()
             || (self.pending.len() < MAX_IN_FLIGHT_FRAMES
-                && self.pending.iter().map(|entry| entry.2).sum::<usize>() + bytes
-                    <= MAX_IN_FLIGHT_BYTES)
+                && self.pending.iter().map(|entry| entry.2).sum::<usize>() + bytes <= MAX_IN_FLIGHT_BYTES)
     }
 
     pub(crate) async fn next(&mut self) -> anyhow::Result<Bytes> {
         let deadline = self.pending.front().map(|entry| entry.1 + ACK_TIMEOUT);
+
         if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
             anyhow::bail!("WebSocket video acknowledgment timed out");
         }
@@ -62,6 +62,7 @@ impl WebSocketVideo {
                 std::future::pending::<()>().await;
             }
         };
+
         tokio::pin!(timeout);
 
         if self.queued.is_none() && self.can_send(0) {
@@ -72,20 +73,19 @@ impl WebSocketVideo {
             self.queued = Some(sample);
         }
 
-        if self
-            .queued
-            .as_ref()
-            .is_none_or(|sample| !self.can_send(sample.data.len() + 9))
-        {
+        if self.queued.as_ref().is_none_or(|sample| !self.can_send(sample.data.len() + 9)) {
             timeout.await;
             anyhow::bail!("WebSocket video acknowledgment timed out");
         }
 
         let sample = self.queued.take().expect("frame ready above");
+
         self.sequence = self.sequence.wrapping_add(1);
+
         let packet = packet(self.sequence, sample);
-        self.pending
-            .push_back((self.sequence, Instant::now(), packet.len()));
+
+        self.pending.push_back((self.sequence, Instant::now(), packet.len()));
+
         Ok(packet)
     }
 
@@ -95,9 +95,8 @@ impl WebSocketVideo {
         };
         let (_, sent, _) = self.pending.remove(index).expect("pending entry exists");
         let elapsed = sent.elapsed();
-        let baseline = self
-            .baseline_delay
-            .map_or(elapsed, |baseline| baseline.min(elapsed));
+        let baseline = self.baseline_delay.map_or(elapsed, |baseline| baseline.min(elapsed));
+
         self.baseline_delay = Some(baseline);
 
         if self.last_rate_update.elapsed() < RATE_UPDATE_INTERVAL {
@@ -113,8 +112,8 @@ impl WebSocketVideo {
         } else {
             current
         };
-        self.bitrate
-            .store(next.clamp(MIN_BITRATE, MAX_BITRATE), Ordering::Relaxed);
+
+        self.bitrate.store(next.clamp(MIN_BITRATE, MAX_BITRATE), Ordering::Relaxed);
         self.last_rate_update = Instant::now();
     }
 
@@ -134,6 +133,7 @@ fn packet(sequence: u32, sample: EncodedSample) -> Bytes {
     bytes.put_u16(sample.height as u16);
     bytes.put_u8(u8::from(sample.keyframe));
     bytes.extend_from_slice(&sample.data);
+
     bytes.freeze()
 }
 
@@ -159,14 +159,10 @@ mod tests {
         assert!(!video.can_send(MAX_IN_FLIGHT_BYTES));
         video.pending.clear();
         assert!(video.can_send(MAX_IN_FLIGHT_BYTES * 2));
-        video
-            .pending
-            .push_back((9, Instant::now(), MAX_IN_FLIGHT_BYTES * 2));
+        video.pending.push_back((9, Instant::now(), MAX_IN_FLIGHT_BYTES * 2));
         assert!(!video.can_send(1));
         video.pending.clear();
-        video
-            .pending
-            .push_back((10, Instant::now() - ACK_TIMEOUT, 10));
+        video.pending.push_back((10, Instant::now() - ACK_TIMEOUT, 10));
         assert!(video.next().await.is_err());
         video.close().await;
     }
@@ -176,15 +172,11 @@ mod tests {
         let (_frames, frames) = watch::channel(None);
         let mut video = WebSocketVideo::start(frames);
         video.last_rate_update = Instant::now() - RATE_UPDATE_INTERVAL;
-        video
-            .pending
-            .push_back((1, Instant::now() - Duration::from_millis(300), 10_000));
+        video.pending.push_back((1, Instant::now() - Duration::from_millis(300), 10_000));
         video.acknowledge(1);
         assert_eq!(video.bitrate.load(Ordering::Relaxed), INITIAL_BITRATE);
         video.last_rate_update = Instant::now() - RATE_UPDATE_INTERVAL;
-        video
-            .pending
-            .push_back((2, Instant::now() - Duration::from_millis(800), 10_000));
+        video.pending.push_back((2, Instant::now() - Duration::from_millis(800), 10_000));
         video.acknowledge(2);
         assert!(video.bitrate.load(Ordering::Relaxed) < INITIAL_BITRATE);
         video.close().await;

@@ -14,6 +14,7 @@ pub(super) struct HeldInput {
 impl HeldInput {
     pub(super) fn key(&mut self, params: &DispatchKeyEventParams) {
         let code = params.code.clone().unwrap_or_default();
+
         if params.r#type == DispatchKeyEventType::KeyUp {
             self.keys.remove(&code);
         } else {
@@ -39,6 +40,7 @@ impl HeldInput {
         // Keep entries until CDP confirms release so reconnect can retry unfinished cleanup.
         for code in self.keys.keys().cloned().collect::<Vec<_>>() {
             let mut params = self.keys[&code].clone();
+
             params.r#type = DispatchKeyEventType::KeyUp;
             params.modifiers = Some(0);
             page.execute(params).await?;

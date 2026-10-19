@@ -5,7 +5,7 @@ import i18n, { t } from '../src/i18n.ts';
 import en from '../src/locales/en.json' with { type: 'json' };
 import zh from '../src/locales/zh.json' with { type: 'json' };
 
-test('browser language preferences select Chinese or English without cached overrides', async context => {
+test('browser language preferences select Chinese or English without cached overrides', async (context) => {
     const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 
     context.after(() => {
@@ -36,8 +36,10 @@ test('browser language preferences select Chinese or English without cached over
 });
 
 test('translation catalogs contain matching keys and interpolation variables', () => {
-    const flatten = (object, prefix = '') => Object.entries(object).flatMap(([key, value]) =>
-        typeof value === 'string' ? [[prefix + key, value]] : flatten(value, `${prefix}${key}.`));
+    const flatten = (object, prefix = '') =>
+        Object.entries(object).flatMap(([key, value]) =>
+            typeof value === 'string' ? [[prefix + key, value]] : flatten(value, `${prefix}${key}.`),
+        );
     const english = Object.fromEntries(flatten(en));
     const chinese = Object.fromEntries(flatten(zh));
 

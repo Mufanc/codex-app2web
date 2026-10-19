@@ -52,8 +52,10 @@
 
         try {
             const range = document.createRange();
+
             range.setStart(marker.firstChild, 0);
             range.collapse(true);
+
             const caret = range.getClientRects()[0];
             const origin = mirror.getBoundingClientRect();
             const bounds = element.getBoundingClientRect();
@@ -101,6 +103,7 @@
 
     function update() {
         scheduled = 0;
+
         const element = activeElement();
 
         if (element !== observed) {
@@ -115,6 +118,7 @@
         else if (element?.isContentEditable) point = editableCaret(element);
 
         if (point && (!Number.isFinite(point.x) || !Number.isFinite(point.y))) point = null;
+
         const payload = JSON.stringify(point);
 
         if (payload !== previous) {

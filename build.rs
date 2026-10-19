@@ -16,20 +16,15 @@ fn main() {
 
     let frontend = Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend");
     let mut install = Command::new("pnpm");
-    install
-        .arg("install")
-        .arg("--frozen-lockfile")
-        .current_dir(&frontend);
+
+    install.arg("install").arg("--frozen-lockfile").current_dir(&frontend);
 
     if std::env::var_os("CARGO_NET_OFFLINE").is_some() {
         install.arg("--offline");
     }
 
     assert!(
-        install
-            .status()
-            .expect("pnpm is required to build the frontend")
-            .success(),
+        install.status().expect("pnpm is required to build the frontend").success(),
         "pnpm install failed"
     );
     assert!(

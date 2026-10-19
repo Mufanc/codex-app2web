@@ -2,16 +2,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chromiumoxide::browser::Browser;
-use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchMouseEventParams, InsertTextParams,
-};
+use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchMouseEventParams, InsertTextParams};
 use chromiumoxide::cdp::browser_protocol::page::{
-    EventDomContentEventFired, EventScreencastFrame, ScreencastFrameAckParams,
-    StartScreencastFormat, StartScreencastParams, StopScreencastParams,
+    EventDomContentEventFired, EventScreencastFrame, ScreencastFrameAckParams, StartScreencastFormat,
+    StartScreencastParams, StopScreencastParams,
 };
-use chromiumoxide::cdp::js_protocol::runtime::{
-    AddBindingParams, EvaluateParams, EventBindingCalled,
-};
+use chromiumoxide::cdp::js_protocol::runtime::{AddBindingParams, EvaluateParams, EventBindingCalled};
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -108,14 +104,7 @@ async fn reconnect(
     loop {
         while commands.try_recv().is_ok() {}
 
-        let result = run_connection(
-            cdp_port,
-            &mut commands,
-            &updates,
-            ownership.clone(),
-            &mut held,
-        )
-        .await;
+        let result = run_connection(cdp_port, &mut commands, &updates, ownership.clone(), &mut held).await;
         let was_connected = *updates.ready.borrow();
 
         updates.ready.send_replace(false);
@@ -129,9 +118,7 @@ async fn reconnect(
 
         eprintln!(
             "CDP disconnected: {}; retrying in {}s",
-            result
-                .err()
-                .map_or_else(|| "session ended".into(), |error| error.to_string()),
+            result.err().map_or_else(|| "session ended".into(), |error| error.to_string()),
             delay.as_secs()
         );
 
@@ -151,8 +138,7 @@ async fn run_connection(
     ownership: watch::Receiver<Option<u64>>,
     held: &mut HeldInput,
 ) -> anyhow::Result<()> {
-    let (mut browser, mut handler) =
-        Browser::connect(format!("http://127.0.0.1:{cdp_port}")).await?;
+    let (mut browser, mut handler) = Browser::connect(format!("http://127.0.0.1:{cdp_port}")).await?;
 
     let mut handler_task = tokio::spawn(async move {
         while let Some(event) = handler.next().await {
@@ -193,6 +179,7 @@ async fn run_connection(
         } => result,
         _ = &mut handler_task => Err(anyhow::anyhow!("CDP transport closed")),
     };
+
     handler_task.abort();
     result
 }
@@ -214,6 +201,7 @@ async fn run_cdp(
 
     let mut caret_events = page.event_listener::<EventBindingCalled>().await?;
     let mut loaded = page.event_listener::<EventDomContentEventFired>().await?;
+
     page.execute(AddBindingParams::new(CURSOR_BINDING)).await?;
     evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
 
@@ -234,6 +222,7 @@ async fn run_cdp(
     let result = async {
     loop {
         let current = *ownership.borrow_and_update();
+
         if current != owner {
             held.release(&page).await?;
             evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
@@ -255,9 +244,12 @@ async fn run_cdp(
                         current.clone_from(&event.payload);
                         true
                     });
+
                     continue;
                 }
+
                 if viewport_size.is_none() || event.name != CURSOR_BINDING { continue; }
+
                 let Ok(point) = serde_json::from_str::<Value>(&event.payload) else { continue; };
                 let point = if point.is_null() {
                     None
@@ -265,6 +257,7 @@ async fn run_cdp(
                     && point.get("y").and_then(Value::as_f64).is_some_and(f64::is_finite) {
                     Some(point)
                 } else { continue; };
+
                 cursor.send_if_modified(|current| {
                     if *current == point { return false; }
                     *current = point;
@@ -288,6 +281,7 @@ async fn run_cdp(
                         configure_capture(&page, &frames, &mut capture_size, desired).await?;
                     }
                 }
+
                 window_changed_at = None;
             }
             Some(command) = async {
@@ -295,6 +289,7 @@ async fn run_cdp(
             } => {
                 if Some(command.owner) != *ownership.borrow() { continue; }
                 if Some(command.owner) != owner { pending_command = Some(command); continue; }
+
                 match command.input {
                     CdpInput::Mouse(params) => { held.mouse(&params); if let Err(error) = page.execute(params).await { eprintln!("Mouse input failed: {error}"); } }
                     CdpInput::Key(params) => { held.key(&params); if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
@@ -302,6 +297,7 @@ async fn run_cdp(
                     CdpInput::Resize(width, height) => {
                         if viewport_size.is_none() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
                         viewport_size = Some((width, height));
+
                         let desired = capture_limit((width, height), window_size);
 
                         if capture_size != Some(desired) {
@@ -338,25 +334,20 @@ async fn run_cdp(
 
     Ok::<_, anyhow::Error>(())
     }.await;
+
     let _ = held.release(&page).await;
     let _ = evaluate_script(&page, CURSOR_STOP_SCRIPT).await;
     let _ = evaluate_script(&page, TITLE_STOP_SCRIPT).await;
+
     result
 }
 
 async fn evaluate_script(page: &Page, script: &str) -> anyhow::Result<()> {
     let result = page
-        .execute(
-            EvaluateParams::builder()
-                .expression(script)
-                .build()
-                .map_err(anyhow::Error::msg)?,
-        )
+        .execute(EvaluateParams::builder().expression(script).build().map_err(anyhow::Error::msg)?)
         .await?;
-    anyhow::ensure!(
-        result.result.exception_details.is_none(),
-        "Page tracking script failed"
-    );
+
+    anyhow::ensure!(result.result.exception_details.is_none(), "Page tracking script failed");
     Ok(())
 }
 
@@ -408,10 +399,7 @@ mod tests {
     #[test]
     fn capture_limit_tracks_smaller_window_or_viewport() {
         assert_eq!(capture_limit((1920, 1080), None), (1920, 1080));
-        assert_eq!(
-            capture_limit((1920, 1080), Some((2560, 1410))),
-            (1920, 1080)
-        );
+        assert_eq!(capture_limit((1920, 1080), Some((2560, 1410))), (1920, 1080));
         assert_eq!(capture_limit((1920, 1080), Some((1280, 900))), (1280, 900));
         assert_eq!(capture_limit((900, 800), Some((1200, 600))), (900, 600));
     }

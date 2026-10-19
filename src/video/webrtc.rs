@@ -12,16 +12,14 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 };
 use rtc::peer_connection::configuration::media_engine::MIME_TYPE_HEVC;
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
-    RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use tokio::sync::{broadcast, watch};
 use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{
-    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-    RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionIceEvent,
-    RTCPeerConnectionState, RTCSessionDescription,
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription,
 };
 use webrtc::rtp_transceiver::RtpSender;
 
@@ -53,6 +51,7 @@ impl VideoSession {
 
     pub(crate) async fn close(mut self) {
         self.stop.send_replace(true);
+
         if let Some(task) = self.task.take() {
             let _ = task.await;
         } else {
@@ -129,12 +128,9 @@ struct ReportingEstimator {
 
 impl ReportingEstimator {
     fn new() -> (Self, Arc<AtomicU64>) {
-        let inner = Gcc::new(
-            INITIAL_BITRATE as f64,
-            MIN_BITRATE as f64,
-            MAX_BITRATE as f64,
-        );
+        let inner = Gcc::new(INITIAL_BITRATE as f64, MIN_BITRATE as f64, MAX_BITRATE as f64);
         let target = Arc::new(AtomicU64::new(inner.target_bitrate() as u64));
+
         (
             Self {
                 inner,
@@ -145,8 +141,7 @@ impl ReportingEstimator {
     }
 
     fn publish(&self) {
-        self.target
-            .store(self.inner.target_bitrate() as u64, Ordering::Relaxed);
+        self.target.store(self.inner.target_bitrate() as u64, Ordering::Relaxed);
     }
 }
 
@@ -214,10 +209,7 @@ pub(crate) async fn signal(
                 description: Box::new(answer),
             }))
         }
-        VideoSignal::Ice {
-            video_id,
-            candidate,
-        } => {
+        VideoSignal::Ice { video_id, candidate } => {
             let Some(current) = session.as_ref().filter(|current| current.id == video_id) else {
                 return Ok(None);
             };
@@ -257,12 +249,8 @@ async fn start_session(
     media_engine.register_codec(codec.clone(), RtpCodecKind::Video)?;
 
     let (estimator, target_bitrate) = ReportingEstimator::new();
-    let registry = configure_congestion_control(
-        Registry::new(),
-        estimator,
-        CongestionFeedback::Twcc,
-        &mut media_engine,
-    )?;
+    let registry =
+        configure_congestion_control(Registry::new(), estimator, CongestionFeedback::Twcc, &mut media_engine)?;
     let registry = register_default_interceptors(registry, &mut media_engine)?;
     let configuration = RTCConfigurationBuilder::new()
         .with_ice_servers(vec![RTCIceServer {
@@ -311,10 +299,8 @@ async fn start_session(
         let answer = peer.create_answer(None).await?;
 
         peer.set_local_description(answer).await?;
-        let answer = peer
-            .local_description()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("missing local SDP"))?;
+
+        let answer = peer.local_description().await.ok_or_else(|| anyhow::anyhow!("missing local SDP"))?;
 
         Ok::<_, anyhow::Error>((sender, track, ssrc, answer))
     }
@@ -337,6 +323,7 @@ async fn start_session(
     };
 
     let video_id = session.id.clone();
+
     session.task = Some(tokio::spawn(async move {
         if let Err(error) = run_session(
             sender,
@@ -364,6 +351,7 @@ async fn start_session(
     }));
 
     cleanup.0 = None;
+
     Ok((session, answer))
 }
 
@@ -383,6 +371,7 @@ async fn run_session(
         if *stopped.borrow() {
             return Ok(());
         }
+
         match *connected.borrow_and_update() {
             RTCPeerConnectionState::Connected => break,
             RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => return Ok(()),
@@ -407,6 +396,7 @@ async fn run_session(
     let result = async {
         loop {
             if *stopped.borrow() { break; }
+
             tokio::select! {
                 _ = stopped.changed() => break,
                 result = connected.changed() => {
@@ -416,16 +406,19 @@ async fn run_session(
                     let sample = sample?;
                     let send = async {
                         let gap = sample.duration.saturating_sub(FRAME_INTERVAL);
+
                         if !gap.is_zero() {
                             // Advance RTP time over idle periods before sending the next frame.
                             track.sample_writer(ssrc, payload_type).write_sample(&Sample {
                                 data: Bytes::new(), duration: gap, ..Sample::new(Instant::now())
                             }).await?;
                         }
+
                         track.sample_writer(ssrc, payload_type).write_sample(&Sample {
                             data: Bytes::from(sample.data), duration: FRAME_INTERVAL, ..Sample::new(Instant::now())
                         }).await
                     };
+
                     tokio::select! {
                         _ = stopped.changed() => break,
                         result = send => { result?; }
@@ -433,8 +426,12 @@ async fn run_session(
                 }
             }
         }
+
         Ok::<_, anyhow::Error>(())
-    }.await;
+    }
+    .await;
+
     let closed = encoder.close().await;
+
     result.and(closed)
 }

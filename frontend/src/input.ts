@@ -3,7 +3,12 @@ import type { InputMessage, Point } from './protocol.ts';
 type Dimensions = { sourceWidth: number; sourceHeight: number; decodedSize: [number, number] | null };
 type Picture = { left: number; top: number; width: number; height: number };
 
-export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, dimensions: () => Dimensions, send: (message: InputMessage) => void) {
+export function createInput(
+    stage: HTMLElement,
+    keyboard: HTMLTextAreaElement,
+    dimensions: () => Dimensions,
+    send: (message: InputMessage) => void,
+) {
     const pressed = new Set<string>();
     let composing = false;
     let compositionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -34,8 +39,8 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
         if (!clamp && (x < 0 || y < 0 || x > rect.width || y > rect.height)) return null;
 
         return {
-            x: Math.max(0, Math.min(rect.width, x)) / rect.width * sourceWidth,
-            y: Math.max(0, Math.min(rect.height, y)) / rect.height * sourceHeight,
+            x: (Math.max(0, Math.min(rect.width, x)) / rect.width) * sourceWidth,
+            y: (Math.max(0, Math.min(rect.height, y)) / rect.height) * sourceHeight,
         };
     }
 
@@ -45,8 +50,8 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
 
         if (!rect || !point) return;
 
-        keyboard.style.left = `${Math.max(0, Math.min(stage.clientWidth - 2, rect.left + point.x / sourceWidth * rect.width))}px`;
-        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - 20, rect.top + point.y / sourceHeight * rect.height))}px`;
+        keyboard.style.left = `${Math.max(0, Math.min(stage.clientWidth - 2, rect.left + (point.x / sourceWidth) * rect.width))}px`;
+        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - 20, rect.top + (point.y / sourceHeight) * rect.height))}px`;
     }
 
     function modifiers(event: KeyboardEvent) {
@@ -60,14 +65,28 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
         event.preventDefault();
         pressed.add(event.code);
 
-        send({ type: 'key', action: 'keyDown', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
+        send({
+            type: 'key',
+            action: 'keyDown',
+            key: event.key,
+            code: event.code,
+            key_code: event.keyCode,
+            modifiers: modifiers(event),
+        });
     }
 
     function onKeyUp(event: KeyboardEvent) {
         if (!pressed.delete(event.code)) return;
 
         event.preventDefault();
-        send({ type: 'key', action: 'keyUp', key: event.key, code: event.code, key_code: event.keyCode, modifiers: modifiers(event) });
+        send({
+            type: 'key',
+            action: 'keyUp',
+            key: event.key,
+            code: event.code,
+            key_code: event.keyCode,
+            modifiers: modifiers(event),
+        });
     }
 
     function sendKeyboardText() {
@@ -77,9 +96,14 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
         keyboard.value = '';
     }
 
-    function onCompositionStart() { composing = true; }
+    function onCompositionStart() {
+        composing = true;
+    }
 
-    function onCompositionEnd() { composing = false; compositionTimer = setTimeout(sendKeyboardText, 0); }
+    function onCompositionEnd() {
+        composing = false;
+        compositionTimer = setTimeout(sendKeyboardText, 0);
+    }
 
     function onInput(event: Event) {
         if (!(event as InputEvent).isComposing && !composing) sendKeyboardText();
@@ -94,7 +118,13 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
         placeKeyboard(point);
         keyboard.focus({ preventScroll: true });
         stage.setPointerCapture(event.pointerId);
-        send({ type: 'mouse', action: 'mousePressed', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
+        send({
+            type: 'mouse',
+            action: 'mousePressed',
+            ...point,
+            button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left',
+            buttons: event.buttons,
+        });
     }
 
     function onPointerMove(event: PointerEvent) {
@@ -106,7 +136,14 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
     function onPointerUp(event: PointerEvent) {
         const point = coordinates(event, true);
 
-        if (point) send({ type: 'mouse', action: 'mouseReleased', ...point, button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', buttons: event.buttons });
+        if (point)
+            send({
+                type: 'mouse',
+                action: 'mouseReleased',
+                ...point,
+                button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left',
+                buttons: event.buttons,
+            });
     }
 
     function onWheel(event: WheelEvent) {
@@ -118,7 +155,9 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
         send({ type: 'wheel', ...point, delta_x: event.deltaX, delta_y: event.deltaY });
     }
 
-    function onContextMenu(event: MouseEvent) { event.preventDefault(); }
+    function onContextMenu(event: MouseEvent) {
+        event.preventDefault();
+    }
 
     keyboard.addEventListener('keydown', onKeyDown);
     keyboard.addEventListener('keyup', onKeyUp);
@@ -141,7 +180,9 @@ export function createInput(stage: HTMLElement, keyboard: HTMLTextAreaElement, d
     }
 
     const onBlur = () => reset();
-    const onVisibility = () => { if (document.hidden) reset(); };
+    const onVisibility = () => {
+        if (document.hidden) reset();
+    };
 
     window.addEventListener('blur', onBlur);
     document.addEventListener('visibilitychange', onVisibility);

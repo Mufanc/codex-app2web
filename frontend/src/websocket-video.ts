@@ -13,14 +13,17 @@ export function createWebSocketVideo(
     if (typeof VideoDecoder === 'undefined') throw new Error(t('video.unsupported'));
 
     const canvas = document.createElement('canvas');
+
     canvas.className = 'fallback-screen';
     canvas.setAttribute('aria-label', t('accessibility.screen'));
+
     const context = canvas.getContext('2d', { alpha: false });
 
     if (!context) throw new Error(t('video.canvasError'));
 
     screen.after(canvas);
     screen.hidden = true;
+
     let size = '';
     const pending = new Map<number, number>();
     let timestamp = 0;
@@ -36,7 +39,9 @@ export function createWebSocketVideo(
 
                 context.drawImage(frame, 0, 0);
                 onFrame(frame.displayWidth, frame.displayHeight);
+
                 const sequence = pending.get(frame.timestamp);
+
                 if (sequence !== undefined) {
                     pending.delete(frame.timestamp);
                     acknowledge(sequence);
@@ -45,15 +50,21 @@ export function createWebSocketVideo(
                 frame.close();
             }
         },
-        error(error) { if (!signal.aborted) onError(t('video.decodeError', { error: error.message })); },
+        error(error) {
+            if (!signal.aborted) onError(t('video.decodeError', { error: error.message }));
+        },
     });
 
-    signal.addEventListener('abort', () => {
-        if (decoder.state !== 'closed') decoder.close();
-        pending.clear();
-        canvas.remove();
-        screen.hidden = false;
-    }, { once: true });
+    signal.addEventListener(
+        'abort',
+        () => {
+            if (decoder.state !== 'closed') decoder.close();
+            pending.clear();
+            canvas.remove();
+            screen.hidden = false;
+        },
+        { once: true },
+    );
 
     return (data: ArrayBuffer) => {
         if (signal.aborted) return;
@@ -76,10 +87,15 @@ export function createWebSocketVideo(
             }
 
             const frameTimestamp = timestamp++;
+
             pending.set(frameTimestamp, sequence);
-            decoder.decode(new EncodedVideoChunk({
-                type: keyframe ? 'key' : 'delta', timestamp: frameTimestamp, data: new Uint8Array(data, HEADER_BYTES),
-            }));
+            decoder.decode(
+                new EncodedVideoChunk({
+                    type: keyframe ? 'key' : 'delta',
+                    timestamp: frameTimestamp,
+                    data: new Uint8Array(data, HEADER_BYTES),
+                }),
+            );
         } catch (error) {
             onError(t('video.decodeError', { error: String(error) }));
         }

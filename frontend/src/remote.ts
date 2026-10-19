@@ -2,7 +2,13 @@ import { t } from './i18n.ts';
 import { createWebSocketVideo } from './websocket-video.ts';
 import { createInput } from './input.ts';
 import { startWebRtc } from './webrtc-video.ts';
-import { MAX_VIDEO_WIDTH, MAX_VIDEO_HEIGHT, type ClientMessage, type ServerMessage, type VideoSignal } from './protocol.ts';
+import {
+    MAX_VIDEO_WIDTH,
+    MAX_VIDEO_HEIGHT,
+    type ClientMessage,
+    type ServerMessage,
+    type VideoSignal,
+} from './protocol.ts';
 
 export type VideoTransport = 'WebRTC' | 'WebSocket';
 export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'error';
@@ -48,19 +54,28 @@ export function startRemote(
     function resizeVideo(immediate = false) {
         clearTimeout(resizeTimer);
 
-        resizeTimer = setTimeout(() => {
-            if (socket?.readyState !== WebSocket.OPEN) return;
+        resizeTimer = setTimeout(
+            () => {
+                if (socket?.readyState !== WebSocket.OPEN) return;
 
-            const viewportWidth = Math.max(320, Math.min(MAX_VIDEO_WIDTH, Math.round(stage.clientWidth * devicePixelRatio)));
-            const viewportHeight = Math.max(240, Math.min(MAX_VIDEO_HEIGHT, Math.round(stage.clientHeight * devicePixelRatio)));
+                const viewportWidth = Math.max(
+                    320,
+                    Math.min(MAX_VIDEO_WIDTH, Math.round(stage.clientWidth * devicePixelRatio)),
+                );
+                const viewportHeight = Math.max(
+                    240,
+                    Math.min(MAX_VIDEO_HEIGHT, Math.round(stage.clientHeight * devicePixelRatio)),
+                );
 
-            if (!sentViewport || sentViewport[0] !== viewportWidth || sentViewport[1] !== viewportHeight) {
-                send({ type: 'resize', width: viewportWidth, height: viewportHeight });
-                sentViewport = [viewportWidth, viewportHeight];
-            }
+                if (!sentViewport || sentViewport[0] !== viewportWidth || sentViewport[1] !== viewportHeight) {
+                    send({ type: 'resize', width: viewportWidth, height: viewportHeight });
+                    sentViewport = [viewportWidth, viewportHeight];
+                }
 
-            if (sourceWidth && sourceHeight) startVideo();
-        }, immediate ? 0 : 1000);
+                if (sourceWidth && sourceHeight) startVideo();
+            },
+            immediate ? 0 : 1000,
+        );
     }
 
     const resizeObserver = new ResizeObserver(() => resizeVideo());
@@ -71,9 +86,12 @@ export function startRemote(
         videoAbort?.abort();
         videoAbort = new AbortController();
         videoStarted = true;
+
         const signal = videoAbort.signal;
+
         onTransport('WebSocket');
         onState('connecting', t('connection.switching'));
+
         const timeout = setTimeout(() => fail(t('connection.websocketTimeout')), FALLBACK_TIMEOUT_MS);
 
         function fail(message: string) {
@@ -82,18 +100,29 @@ export function startRemote(
             onState('error', message);
         }
 
-        signal.addEventListener('abort', () => {
-            clearTimeout(timeout);
-            receiveVideoFrame = undefined;
-            decodedSize = null;
-        }, { once: true });
+        signal.addEventListener(
+            'abort',
+            () => {
+                clearTimeout(timeout);
+                receiveVideoFrame = undefined;
+                decodedSize = null;
+            },
+            { once: true },
+        );
 
         try {
-            receiveVideoFrame = createWebSocketVideo(screen, signal, (width, height) => {
-                clearTimeout(timeout);
-                decodedSize = [width, height];
-                onState('streaming');
-            }, sequence => send({ type: 'video_ack', sequence }), fail);
+            receiveVideoFrame = createWebSocketVideo(
+                screen,
+                signal,
+                (width, height) => {
+                    clearTimeout(timeout);
+                    decodedSize = [width, height];
+                    onState('streaming');
+                },
+                (sequence) => send({ type: 'video_ack', sequence }),
+                fail,
+            );
+
             send({ type: 'fallback' });
         } catch (error) {
             fail(String(error));
@@ -108,7 +137,9 @@ export function startRemote(
 
         const signal = videoAbort.signal;
         const hevc = window.RTCPeerConnection
-            ? RTCRtpReceiver.getCapabilities('video')?.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h265')
+            ? RTCRtpReceiver.getCapabilities('video')?.codecs.filter(
+                  (codec) => codec.mimeType.toLowerCase() === 'video/h265',
+              )
             : undefined;
 
         if (!hevc?.length) {
@@ -119,21 +150,32 @@ export function startRemote(
 
         onTransport('WebRTC');
         onState('connecting', t('connection.webrtcConnecting'));
-
         videoStarted = true;
-        signal.addEventListener('abort', () => {
-            receiveVideoSignal = undefined;
-            decodedSize = null;
-        }, { once: true });
+
+        signal.addEventListener(
+            'abort',
+            () => {
+                receiveVideoSignal = undefined;
+                decodedSize = null;
+            },
+            { once: true },
+        );
 
         try {
-            receiveVideoSignal = startWebRtc(screen, signal, hevc, send, () => {
-                onScreenResize();
-                onState('streaming');
-            }, message => {
-                console.info(t('connection.fallbackLog', { error: message }));
-                startFallback();
-            });
+            receiveVideoSignal = startWebRtc(
+                screen,
+                signal,
+                hevc,
+                send,
+                () => {
+                    onScreenResize();
+                    onState('streaming');
+                },
+                (message) => {
+                    console.info(t('connection.fallbackLog', { error: message }));
+                    startFallback();
+                },
+            );
         } catch (error) {
             console.info(error);
             startFallback();
@@ -150,28 +192,41 @@ export function startRemote(
         videoAbort?.abort();
         videoStarted = false;
         sentViewport = null;
+
         const previous = socket;
+
         socket = undefined;
         previous?.close();
         document.title = defaultTitle;
         onTransport(null);
         onState('connecting');
-        const current = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${claim ? '?takeover=true' : ''}`);
-        socket = current;
 
+        const current = new WebSocket(
+            `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${claim ? '?takeover=true' : ''}`,
+        );
+
+        socket = current;
         socket.binaryType = 'arraybuffer';
 
-        socket.onopen = () => { if (!disposed && socket === current) resizeVideo(true); };
+        socket.onopen = () => {
+            if (!disposed && socket === current) resizeVideo(true);
+        };
 
-        socket.onmessage = event => {
+        socket.onmessage = (event) => {
             if (disposed || socket !== current) return;
+
             if (event.data instanceof ArrayBuffer) {
                 receiveVideoFrame?.(event.data);
                 return;
             }
 
             let message: ServerMessage;
-            try { message = JSON.parse(event.data); } catch { return; }
+
+            try {
+                message = JSON.parse(event.data);
+            } catch {
+                return;
+            }
 
             if (message.type === 'size') {
                 const firstSize = !sourceWidth || !sourceHeight;
@@ -182,12 +237,12 @@ export function startRemote(
 
                 if (changed) {
                     onSize(sourceWidth, sourceHeight);
-
                     if (firstSize) resizeVideo(true);
                 }
             }
 
-            if (message.type === 'title' && typeof message.title === 'string') document.title = message.title.trim() || defaultTitle;
+            if (message.type === 'title' && typeof message.title === 'string')
+                document.title = message.title.trim() || defaultTitle;
 
             if (message.type === 'cursor') input.placeKeyboard(message.point);
 
@@ -205,7 +260,7 @@ export function startRemote(
             }
         };
 
-        socket.onclose = event => {
+        socket.onclose = (event) => {
             if (disposed || socket !== current) return;
             socket = undefined;
             input.reset(false);
@@ -224,6 +279,7 @@ export function startRemote(
 
     async function refreshSession() {
         if (disposed) return;
+
         const attempt = generation;
 
         try {
@@ -246,10 +302,8 @@ export function startRemote(
             input.dispose();
             disposed = true;
             document.title = defaultTitle;
-
             clearTimeout(resizeTimer);
             clearTimeout(reconnectTimer);
-
             resizeObserver.disconnect();
             screen.removeEventListener('resize', onScreenResize);
             videoAbort?.abort();

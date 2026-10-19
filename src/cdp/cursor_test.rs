@@ -1,11 +1,9 @@
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
-    InsertTextParams, MouseButton,
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType, InsertTextParams,
+    MouseButton,
 };
-use chromiumoxide::cdp::js_protocol::runtime::{
-    AddBindingParams, EvaluateParams, EventBindingCalled,
-};
+use chromiumoxide::cdp::js_protocol::runtime::{AddBindingParams, EvaluateParams, EventBindingCalled};
 use futures_util::StreamExt;
 use std::time::Duration;
 
@@ -13,12 +11,8 @@ use super::{CURSOR_BINDING, CURSOR_SCRIPT};
 
 #[tokio::test]
 async fn caret_geometry_and_listener_lifecycle_in_chrome() -> anyhow::Result<()> {
-    let directory =
-        std::env::temp_dir().join(format!("codex-caret-test-{}", rand::random::<u64>()));
-    let config = BrowserConfig::builder()
-        .user_data_dir(&directory)
-        .build()
-        .map_err(anyhow::Error::msg)?;
+    let directory = std::env::temp_dir().join(format!("codex-caret-test-{}", rand::random::<u64>()));
+    let config = BrowserConfig::builder().user_data_dir(&directory).build().map_err(anyhow::Error::msg)?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
     let task = tokio::spawn(async move { while handler.next().await.is_some() {} });
     let result = async {

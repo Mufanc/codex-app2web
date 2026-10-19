@@ -54,14 +54,9 @@ async fn browser_video_takeover_resize_and_cdp_reconnect() -> anyhow::Result<()>
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/", listener.local_addr()?);
-    let server =
-        tokio::spawn(async move { axum::serve(listener, super::router(cdp, controller)).await });
-    let directory =
-        std::env::temp_dir().join(format!("codex-session-test-{}", rand::random::<u64>()));
-    let config = BrowserConfig::builder()
-        .user_data_dir(&directory)
-        .build()
-        .map_err(anyhow::Error::msg)?;
+    let server = tokio::spawn(async move { axum::serve(listener, super::router(cdp, controller)).await });
+    let directory = std::env::temp_dir().join(format!("codex-session-test-{}", rand::random::<u64>()));
+    let config = BrowserConfig::builder().user_data_dir(&directory).build().map_err(anyhow::Error::msg)?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
     let driver = tokio::spawn(async move { while handler.next().await.is_some() {} });
 

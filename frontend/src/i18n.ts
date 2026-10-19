@@ -12,15 +12,18 @@ declare module 'i18next' {
     }
 }
 
-void i18n.use(LanguageDetector).use(initReactI18next).init({
-    resources: { en: { translation: en }, zh: { translation: zh } },
-    supportedLngs: ['en', 'zh'],
-    fallbackLng: 'en',
-    load: 'languageOnly',
-    detection: { order: ['navigator'], caches: [] },
-    interpolation: { escapeValue: false },
-    initAsync: false,
-});
+void i18n
+    .use(LanguageDetector)
+    .use(initReactI18next)
+    .init({
+        resources: { en: { translation: en }, zh: { translation: zh } },
+        supportedLngs: ['en', 'zh'],
+        fallbackLng: 'en',
+        load: 'languageOnly',
+        detection: { order: ['navigator'], caches: [] },
+        interpolation: { escapeValue: false },
+        initAsync: false,
+    });
 
 if (typeof document !== 'undefined') {
     document.documentElement.lang = i18n.resolvedLanguage === 'zh' ? 'zh-CN' : 'en';

@@ -61,9 +61,8 @@ export function SessionToolbar({ status, label, size }: Props) {
         <div
             ref={toolbarRef}
             className={`session-toolbar ${open ? 'is-open' : ''}`}
-            onPointerEnter={event => {
+            onPointerEnter={(event) => {
                 clearTimeout(hideTimer.current);
-
                 if (event.pointerType === 'mouse') setOpen(true);
             }}
             onPointerLeave={() => {
@@ -71,10 +70,10 @@ export function SessionToolbar({ status, label, size }: Props) {
                     if (!toolbarRef.current?.contains(document.activeElement)) setOpen(false);
                 }, 300);
             }}
-            onBlur={event => {
+            onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
             }}
-            onKeyDown={event => {
+            onKeyDown={(event) => {
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     event.stopPropagation();
@@ -90,7 +89,7 @@ export function SessionToolbar({ status, label, size }: Props) {
                 aria-label={open ? t('toolbar.collapseSession') : t('toolbar.expandSession')}
                 aria-expanded={open}
                 aria-controls="session-controls"
-                onClick={() => setOpen(value => !value)}
+                onClick={() => setOpen((value) => !value)}
             >
                 <span className={`connection-dot ${status === 'streaming' ? 'online' : ''}`} />
                 <span className="trigger-grip" />
@@ -99,35 +98,81 @@ export function SessionToolbar({ status, label, size }: Props) {
             <div id="session-controls" className="toolbar-panel" ref={panelRef} inert={!open}>
                 <div className="toolbar-row">
                     <div className="brand">
-                        <span className="brand-mark" aria-hidden="true"><span /></span>
-                        <div><strong>CodexApp2Web</strong><small>{t('toolbar.desktop')}</small></div>
+                        <span className="brand-mark" aria-hidden="true">
+                            <span />
+                        </span>
+                        <div>
+                            <strong>CodexApp2Web</strong>
+                            <small>{t('toolbar.desktop')}</small>
+                        </div>
                     </div>
 
                     <div className="session-info">
                         <span className="connection-state">
-                            <span className={`connection-dot ${status === 'streaming' ? 'online' : ''}`} />{label}
+                            <span className={`connection-dot ${status === 'streaming' ? 'online' : ''}`} />
+                            {label}
                         </span>
 
-                        {size && <span className="resolution">{t('toolbar.resolution', { width: size[0], height: size[1] })}</span>}
+                        {size && (
+                            <span className="resolution">
+                                {t('toolbar.resolution', { width: size[0], height: size[1] })}
+                            </span>
+                        )}
                     </div>
 
                     <div className="toolbar-actions">
-                        <button className="icon-button" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')} title={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')}>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-                                <path d={fullscreen ? 'M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5' : 'M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5'} />
+                        <button
+                            className="icon-button"
+                            onClick={() => void toggleFullscreen()}
+                            aria-label={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')}
+                            title={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')}
+                        >
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                aria-hidden="true"
+                            >
+                                <path
+                                    d={
+                                        fullscreen
+                                            ? 'M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5'
+                                            : 'M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5'
+                                    }
+                                />
                             </svg>
                         </button>
 
-                        <button className="icon-button" onClick={close} aria-label={t('toolbar.collapse')} title={t('toolbar.collapse')}>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>
+                        <button
+                            className="icon-button"
+                            onClick={close}
+                            aria-label={t('toolbar.collapse')}
+                            title={t('toolbar.collapse')}
+                        >
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                aria-hidden="true"
+                            >
+                                <path d="m6 14 6-6 6 6" />
+                            </svg>
                         </button>
                     </div>
                 </div>
 
-                {fullscreenError && <p className="toolbar-hint" role="alert">{fullscreenError}</p>}
+                {fullscreenError && (
+                    <p className="toolbar-hint" role="alert">
+                        {fullscreenError}
+                    </p>
+                )}
             </div>
 
-            <span className="sr-only" role="status">{label}</span>
+            <span className="sr-only" role="status">
+                {label}
+            </span>
         </div>
     );
 }

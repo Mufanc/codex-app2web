@@ -43,12 +43,7 @@ impl Video {
     }
 }
 
-pub(crate) async fn viewer(
-    mut socket: WebSocket,
-    cdp: CdpSession,
-    controller: Controller,
-    takeover: bool,
-) {
+pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: Controller, takeover: bool) {
     let mut ready = cdp.ready.clone();
     let mut ownership = controller.subscribe();
     let rejection = if !*ready.borrow() {
@@ -62,11 +57,7 @@ pub(crate) async fn viewer(
         None
     };
     let Some(id) = id else {
-        let _ = tokio::time::timeout(
-            SEND_TIMEOUT,
-            socket.send(close(rejection.unwrap_or("occupied"))),
-        )
-        .await;
+        let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(close(rejection.unwrap_or("occupied")))).await;
         return;
     };
     let lease = ControlLease { controller, id };
@@ -95,14 +86,17 @@ pub(crate) async fn viewer(
             },
         )?;
         frames.mark_changed();
+
         let mut last_size = None;
         loop {
             tokio::select! {
                 result = frames.changed() => {
                     result?;
                     let frame = frames.borrow_and_update().clone();
+
                     if let Some(frame) = frame {
                         let size = (frame.width, frame.height);
+
                         if last_size != Some(size) {
                             send(&control_tx, ServerMessage::Size { width: frame.width, height: frame.height })?;
                             last_size = Some(size);
@@ -119,6 +113,7 @@ pub(crate) async fn viewer(
                 }
                 message = signals_rx.recv() => {
                     let signal = message?;
+
                     if let Some(Video::WebRtc(current)) = &video {
                         if current.accepts(&signal) { send(&control_tx, signal.message)?; }
                     }
@@ -128,7 +123,9 @@ pub(crate) async fn viewer(
                         // Reserve capacity before consuming a frame; cancellation must not lose an encoded frame.
                         let permit = video_tx.reserve().await?;
                         let packet = current.next().await?;
+
                         permit.send(packet);
+
                         Ok::<_, anyhow::Error>(())
                     } else {
                         std::future::pending().await
@@ -137,6 +134,7 @@ pub(crate) async fn viewer(
                     if let Err(error) = packet {
                         eprintln!("WebSocket video: {error:#}");
                         send(&control_tx, ServerMessage::VideoError { code: VideoErrorCode::Transport })?;
+
                         if let Some(current) = video.take() { current.close().await; }
                     }
                 }
@@ -144,6 +142,7 @@ pub(crate) async fn viewer(
                     match message {
                         Some(Ok(Message::Text(text))) => {
                             let Ok(message) = serde_json::from_str::<ClientMessage>(&text) else { continue; };
+
                             match message {
                                 ClientMessage::Input(value) => {
                                     if let Some(input) = input::input_command(value) {
@@ -162,12 +161,15 @@ pub(crate) async fn viewer(
                                 }
                                 ClientMessage::Video(message) => {
                                     if matches!(video, Some(Video::WebSocket(_))) { continue; }
+
                                     let mut current = match video.take() {
                                         Some(Video::WebRtc(current)) => Some(current),
                                         _ => None,
                                     };
                                     let result = webrtc::signal(cdp.frames.clone(), &mut current, message, &signals_tx).await;
+
                                     video = current.map(Video::WebRtc);
+
                                     match result {
                                         Ok(Some(answer)) => send(&control_tx, answer)?,
                                         Ok(None) => {},
@@ -204,12 +206,15 @@ pub(crate) async fn viewer(
     // Revocation releases remote input immediately, independently of transport shutdown.
     drop(lease);
     stop.send_replace(Some(reason));
+
     if let Some(current) = video {
         current.close().await;
     }
+
     if !writer.is_finished() {
         let _ = writer.await;
     }
+
     eprintln!("Control session {id}: {reason}");
 }
 
@@ -239,6 +244,7 @@ where
         if stopped.borrow().is_some() {
             break;
         }
+
         let message = tokio::select! {
             biased;
             _ = stopped.changed() => break,
@@ -246,13 +252,17 @@ where
             Some(data) = video.recv() => Message::Binary(data),
             else => break,
         };
+
         tokio::select! {
             _ = stopped.changed() => break,
             result = tokio::time::timeout(SEND_TIMEOUT, sink.send(message)) => { result??; }
         }
     }
+
     let reason = (*stopped.borrow()).unwrap_or("session ended");
+
     let _ = tokio::time::timeout(Duration::from_secs(1), sink.send(close(reason))).await;
+
     Ok(())
 }
 
@@ -307,10 +317,7 @@ mod tests {
         let (video_tx, video_rx) = mpsc::channel(1);
         let (stop, stopped) = watch::channel(None);
         video_tx.send(Bytes::from_static(b"video")).await.unwrap();
-        control_tx
-            .send(Message::Text("title".into()))
-            .await
-            .unwrap();
+        control_tx.send(Message::Text("title".into())).await.unwrap();
         let task = tokio::spawn(write_socket(sink, control_rx, video_rx, stopped));
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -323,16 +330,10 @@ mod tests {
         .await
         .unwrap();
         stop.send_replace(Some("taken over"));
-        tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
         let messages = messages.lock().unwrap();
         assert!(matches!(&messages[0], Message::Text(text) if text.as_str() == "title"));
         assert!(matches!(&messages[1], Message::Binary(_)));
-        assert!(
-            matches!(&messages[2], Message::Close(Some(frame)) if frame.reason == "taken over")
-        );
+        assert!(matches!(&messages[2], Message::Close(Some(frame)) if frame.reason == "taken over"));
     }
 }

@@ -109,10 +109,7 @@ mod tests {
                 "type": "ice", "video_id": "test", "candidate": null,
             }))
             .unwrap(),
-            ClientMessage::Video(VideoSignal::Ice {
-                candidate: None,
-                ..
-            })
+            ClientMessage::Video(VideoSignal::Ice { candidate: None, .. })
         ));
         assert!(matches!(
             serde_json::from_value::<ClientMessage>(json!({

@@ -1,6 +1,6 @@
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
-    InsertTextParams, MouseButton,
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType, InsertTextParams,
+    MouseButton,
 };
 use serde::Deserialize;
 
@@ -57,12 +57,7 @@ pub(crate) fn input_command(input: Input) -> Option<CdpInput> {
             y,
             button,
             buttons,
-        } if x.is_finite()
-            && y.is_finite()
-            && x >= 0.0
-            && y >= 0.0
-            && (buttons & !SUPPORTED_MOUSE_BUTTONS) == 0 =>
-        {
+        } if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 && (buttons & !SUPPORTED_MOUSE_BUTTONS) == 0 => {
             let action = match action.as_str() {
                 "mouseMoved" => DispatchMouseEventType::MouseMoved,
                 "mousePressed" => DispatchMouseEventType::MousePressed,
@@ -90,12 +85,9 @@ pub(crate) fn input_command(input: Input) -> Option<CdpInput> {
                     .ok()?,
             ))
         }
-        Input::Wheel {
-            x,
-            y,
-            delta_x,
-            delta_y,
-        } if [x, y, delta_x, delta_y].iter().all(|n| n.is_finite()) && x >= 0.0 && y >= 0.0 => {
+        Input::Wheel { x, y, delta_x, delta_y }
+            if [x, y, delta_x, delta_y].iter().all(|n| n.is_finite()) && x >= 0.0 && y >= 0.0 =>
+        {
             Some(CdpInput::Mouse(
                 DispatchMouseEventParams::builder()
                     .r#type(DispatchMouseEventType::MouseWheel)
@@ -161,10 +153,7 @@ mod tests {
             buttons: 1,
         });
         assert!(matches!(command, Some(CdpInput::Mouse(_))));
-        assert!(input_command(Input::Text {
-            text: String::new()
-        })
-        .is_none());
+        assert!(input_command(Input::Text { text: String::new() }).is_none());
         assert!(matches!(
             input_command(Input::Resize {
                 width: 1920,
