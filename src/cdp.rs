@@ -5,34 +5,23 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchMouseEventParams, InsertTextParams,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
-    EventScreencastFrame, ScreencastFrameAckParams, StartScreencastFormat, StartScreencastParams,
-    StopScreencastParams,
+    EventDomContentEventFired, EventScreencastFrame, ScreencastFrameAckParams,
+    StartScreencastFormat, StartScreencastParams, StopScreencastParams,
 };
-use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
+use chromiumoxide::cdp::js_protocol::runtime::{
+    AddBindingParams, EvaluateParams, EventBindingCalled,
+};
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
-const CURSOR_SCRIPT: &str = r#"(() => {
-  const el = document.activeElement;
-  if (!el) return null;
-  const selection = getSelection();
-  if (selection?.rangeCount && el.contains(selection.anchorNode)) {
-    const range = selection.getRangeAt(0).cloneRange();
-    range.collapse(true);
-    let rect = range.getBoundingClientRect();
-    if (!rect.height && range.startContainer.nodeType === Node.ELEMENT_NODE) {
-      rect = range.startContainer.childNodes[range.startOffset]?.getBoundingClientRect?.() || rect;
-    }
-    if (rect.height) return { x: rect.left, y: rect.bottom };
-  }
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    const rect = el.getBoundingClientRect();
-    return { x: rect.left + 8, y: rect.bottom };
-  }
-  return null;
-})()"#;
+#[cfg(test)]
+mod cursor_test;
+
+const CURSOR_SCRIPT: &str = include_str!("cdp/cursor.js");
+const CURSOR_STOP_SCRIPT: &str = "globalThis.__codexApp2WebCursor?.stop()";
+const CURSOR_BINDING: &str = "__codexApp2WebCaret";
 
 #[derive(Clone)]
 pub(crate) struct Frame {
@@ -176,6 +165,11 @@ async fn run_cdp(
 ) -> anyhow::Result<()> {
     let mut events = page.event_listener::<EventScreencastFrame>().await?;
 
+    let mut caret_events = page.event_listener::<EventBindingCalled>().await?;
+    let mut loaded = page.event_listener::<EventDomContentEventFired>().await?;
+    page.execute(AddBindingParams::new(CURSOR_BINDING)).await?;
+    evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await?;
+
     ready.send_replace(true);
     eprintln!("CDP connected: Codex page ready");
 
@@ -183,19 +177,27 @@ async fn run_cdp(
     let mut viewport_size = None;
     let mut window_size = None;
     let mut window_changed_at: Option<Instant> = None;
-    let mut ticker = tokio::time::interval(Duration::from_millis(250));
 
+    let result = async {
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
-                let command = EvaluateParams::builder().expression(CURSOR_SCRIPT).return_by_value(true).build().map_err(anyhow::Error::msg)?;
-                let point = page.execute(command).await.ok().and_then(|response| response.result.result.value).unwrap_or(Value::Null);
-                let point = if point.is_object() { Some(point) } else { None };
+            Some(event) = caret_events.next() => {
+                if viewport_size.is_none() || event.name != CURSOR_BINDING { continue; }
+                let Ok(point) = serde_json::from_str::<Value>(&event.payload) else { continue; };
+                let point = if point.is_null() {
+                    None
+                } else if point.get("x").and_then(Value::as_f64).is_some_and(f64::is_finite)
+                    && point.get("y").and_then(Value::as_f64).is_some_and(f64::is_finite) {
+                    Some(point)
+                } else { continue; };
                 cursor.send_if_modified(|current| {
                     if *current == point { return false; }
                     *current = point;
                     true
                 });
+            }
+            Some(_) = loaded.next() => {
+                if viewport_size.is_some() { evaluate_cursor_script(&page, CURSOR_SCRIPT).await?; }
             }
             _ = async {
                 if let Some(changed_at) = window_changed_at {
@@ -218,6 +220,7 @@ async fn run_cdp(
                     CdpInput::Key(params) => { if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
                     CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { eprintln!("Text input failed: {error}"); } }
                     CdpInput::Resize(width, height) => {
+                        if viewport_size.is_none() { evaluate_cursor_script(&page, CURSOR_SCRIPT).await?; }
                         viewport_size = Some((width, height));
                         let desired = capture_limit((width, height), window_size);
 
@@ -226,6 +229,8 @@ async fn run_cdp(
                         }
                     }
                     CdpInput::Stop => {
+                        evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await?;
+                        cursor.send_replace(None);
                         if capture_size.take().is_some() { page.execute(StopScreencastParams::default()).await?; }
 
                         frames.send_replace(None);
@@ -260,6 +265,25 @@ async fn run_cdp(
         }
     }
 
+    Ok::<_, anyhow::Error>(())
+    }.await;
+    let _ = evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await;
+    result
+}
+
+async fn evaluate_cursor_script(page: &Page, script: &str) -> anyhow::Result<()> {
+    let result = page
+        .execute(
+            EvaluateParams::builder()
+                .expression(script)
+                .build()
+                .map_err(anyhow::Error::msg)?,
+        )
+        .await?;
+    anyhow::ensure!(
+        result.result.exception_details.is_none(),
+        "Caret tracking script failed"
+    );
     Ok(())
 }
 
