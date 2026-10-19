@@ -19,6 +19,10 @@ use tokio::sync::{mpsc, watch};
 #[cfg(test)]
 mod cursor_test;
 
+const TITLE_SCRIPT: &str = include_str!("cdp/title.js");
+const TITLE_STOP_SCRIPT: &str = "globalThis.__codexApp2WebTitle?.disconnect()";
+const TITLE_BINDING: &str = "__codexApp2WebTitleChanged";
+
 const CURSOR_SCRIPT: &str = include_str!("cdp/cursor.js");
 const CURSOR_STOP_SCRIPT: &str = "globalThis.__codexApp2WebCursor?.stop()";
 const CURSOR_BINDING: &str = "__codexApp2WebCaret";
@@ -41,6 +45,7 @@ pub(crate) enum CdpInput {
 pub(crate) struct CdpSession {
     pub(crate) frames: watch::Receiver<Option<Frame>>,
     pub(crate) cursor: watch::Receiver<Option<Value>>,
+    pub(crate) title: watch::Receiver<String>,
     pub(crate) commands: mpsc::Sender<CdpInput>,
     pub(crate) ready: watch::Receiver<bool>,
 }
@@ -49,15 +54,17 @@ pub(crate) fn connect(cdp_port: u16) -> CdpSession {
     let (commands, command_rx) = mpsc::channel(64);
     let (frame_tx, frames) = watch::channel(None);
     let (cursor_tx, cursor) = watch::channel(None);
+    let (title_tx, title) = watch::channel(String::new());
     let (ready_tx, ready) = watch::channel(false);
 
     tokio::spawn(reconnect(
-        cdp_port, command_rx, frame_tx, cursor_tx, ready_tx,
+        cdp_port, command_rx, frame_tx, cursor_tx, title_tx, ready_tx,
     ));
 
     CdpSession {
         frames,
         cursor,
+        title,
         commands,
         ready,
     }
@@ -68,6 +75,7 @@ async fn reconnect(
     mut commands: mpsc::Receiver<CdpInput>,
     frames: watch::Sender<Option<Frame>>,
     cursor: watch::Sender<Option<Value>>,
+    title: watch::Sender<String>,
     ready: watch::Sender<bool>,
 ) {
     let mut delay = Duration::from_secs(1);
@@ -75,12 +83,13 @@ async fn reconnect(
     loop {
         while commands.try_recv().is_ok() {}
 
-        let result = run_connection(cdp_port, &mut commands, &frames, &cursor, &ready).await;
+        let result = run_connection(cdp_port, &mut commands, &frames, &cursor, &title, &ready).await;
         let was_connected = *ready.borrow();
 
         ready.send_replace(false);
         frames.send_replace(None);
         cursor.send_replace(None);
+        title.send_replace(String::new());
 
         if was_connected {
             delay = Duration::from_secs(1);
@@ -108,6 +117,7 @@ async fn run_connection(
     commands: &mut mpsc::Receiver<CdpInput>,
     frames: &watch::Sender<Option<Frame>>,
     cursor: &watch::Sender<Option<Value>>,
+    title: &watch::Sender<String>,
     ready: &watch::Sender<bool>,
 ) -> anyhow::Result<()> {
     let (mut browser, mut handler) =
@@ -148,7 +158,7 @@ async fn run_connection(
             .await
             .map_err(|_| anyhow::anyhow!("Codex page did not attach within 5 seconds"))?;
 
-            run_cdp(page, commands, frames.clone(), cursor.clone(), ready.clone()).await
+            run_cdp(page, commands, frames.clone(), cursor.clone(), title.clone(), ready.clone()).await
         } => result,
         _ = &mut handler_task => Err(anyhow::anyhow!("CDP transport closed")),
     };
@@ -161,6 +171,7 @@ async fn run_cdp(
     commands: &mut mpsc::Receiver<CdpInput>,
     frames: watch::Sender<Option<Frame>>,
     cursor: watch::Sender<Option<Value>>,
+    title: watch::Sender<String>,
     ready: watch::Sender<bool>,
 ) -> anyhow::Result<()> {
     let mut events = page.event_listener::<EventScreencastFrame>().await?;
@@ -168,7 +179,10 @@ async fn run_cdp(
     let mut caret_events = page.event_listener::<EventBindingCalled>().await?;
     let mut loaded = page.event_listener::<EventDomContentEventFired>().await?;
     page.execute(AddBindingParams::new(CURSOR_BINDING)).await?;
-    evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await?;
+    evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
+
+    page.execute(AddBindingParams::new(TITLE_BINDING)).await?;
+    evaluate_script(&page, TITLE_SCRIPT).await?;
 
     ready.send_replace(true);
     eprintln!("CDP connected: Codex page ready");
@@ -182,6 +196,14 @@ async fn run_cdp(
     loop {
         tokio::select! {
             Some(event) = caret_events.next() => {
+                if event.name == TITLE_BINDING {
+                    title.send_if_modified(|current| {
+                        if *current == event.payload { return false; }
+                        current.clone_from(&event.payload);
+                        true
+                    });
+                    continue;
+                }
                 if viewport_size.is_none() || event.name != CURSOR_BINDING { continue; }
                 let Ok(point) = serde_json::from_str::<Value>(&event.payload) else { continue; };
                 let point = if point.is_null() {
@@ -197,7 +219,8 @@ async fn run_cdp(
                 });
             }
             Some(_) = loaded.next() => {
-                if viewport_size.is_some() { evaluate_cursor_script(&page, CURSOR_SCRIPT).await?; }
+                evaluate_script(&page, TITLE_SCRIPT).await?;
+                if viewport_size.is_some() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
             }
             _ = async {
                 if let Some(changed_at) = window_changed_at {
@@ -220,7 +243,7 @@ async fn run_cdp(
                     CdpInput::Key(params) => { if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
                     CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { eprintln!("Text input failed: {error}"); } }
                     CdpInput::Resize(width, height) => {
-                        if viewport_size.is_none() { evaluate_cursor_script(&page, CURSOR_SCRIPT).await?; }
+                        if viewport_size.is_none() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
                         viewport_size = Some((width, height));
                         let desired = capture_limit((width, height), window_size);
 
@@ -229,7 +252,7 @@ async fn run_cdp(
                         }
                     }
                     CdpInput::Stop => {
-                        evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await?;
+                        evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
                         cursor.send_replace(None);
                         if capture_size.take().is_some() { page.execute(StopScreencastParams::default()).await?; }
 
@@ -267,11 +290,12 @@ async fn run_cdp(
 
     Ok::<_, anyhow::Error>(())
     }.await;
-    let _ = evaluate_cursor_script(&page, CURSOR_STOP_SCRIPT).await;
+    let _ = evaluate_script(&page, CURSOR_STOP_SCRIPT).await;
+    let _ = evaluate_script(&page, TITLE_STOP_SCRIPT).await;
     result
 }
 
-async fn evaluate_cursor_script(page: &Page, script: &str) -> anyhow::Result<()> {
+async fn evaluate_script(page: &Page, script: &str) -> anyhow::Result<()> {
     let result = page
         .execute(
             EvaluateParams::builder()
@@ -282,7 +306,7 @@ async fn evaluate_cursor_script(page: &Page, script: &str) -> anyhow::Result<()>
         .await?;
     anyhow::ensure!(
         result.result.exception_details.is_none(),
-        "Caret tracking script failed"
+        "Page tracking script failed"
     );
     Ok(())
 }

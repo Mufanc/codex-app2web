@@ -26,6 +26,7 @@ export function startRemote(
     onSize: (width: number, height: number) => void,
     onTransport: (transport: VideoTransport | null) => void = () => {},
 ) {
+    const defaultTitle = document.title;
     const sessionId = crypto.randomUUID();
     const pressed = new Set<string>();
 
@@ -388,6 +389,8 @@ export function startRemote(
                 }
             }
 
+            if (message.type === 'title' && typeof message.title === 'string') document.title = message.title.trim() || defaultTitle;
+
             if (message.type === 'cursor') placeKeyboard(message.point);
 
             if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
@@ -405,6 +408,7 @@ export function startRemote(
         };
 
         socket.onclose = event => {
+            document.title = defaultTitle;
             videoAbort?.abort();
             videoStarted = false;
             sentViewport = null;
@@ -440,6 +444,7 @@ export function startRemote(
 
         dispose: () => {
             disposed = true;
+            document.title = defaultTitle;
 
             clearTimeout(resizeTimer);
             clearTimeout(reconnectTimer);

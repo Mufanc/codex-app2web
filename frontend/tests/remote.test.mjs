@@ -37,6 +37,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
         disconnect() {}
     });
 
+    global('document', { title: 'CodexApp2Web' });
     global('location', { protocol: 'http:', host: 'localhost' });
     global('devicePixelRatio', 1);
     global('window', { RTCPeerConnection: Peer });
@@ -228,4 +229,22 @@ test('reconnect refreshes the session cookie and retries failed refreshes', asyn
     finish({ ok: true });
     await new Promise(setImmediate);
     assert.equal(remote.socket, socket);
+});
+
+test('task title sync falls back to the original title and resets on disconnect', t => {
+    const view = setup(t, [1000, 600], [1000, 600]);
+    const title = value => view.socket.onmessage({ data: JSON.stringify({ type: 'title', title: value }) });
+
+    title('Task A');
+    assert.equal(document.title, 'Task A');
+    title('');
+    assert.equal(document.title, 'CodexApp2Web');
+    title('   ');
+    assert.equal(document.title, 'CodexApp2Web');
+    title('Task B');
+    view.socket.onclose({ reason: 'taken over' });
+    assert.equal(document.title, 'CodexApp2Web');
+    title('Task C');
+    view.dispose();
+    assert.equal(document.title, 'CodexApp2Web');
 });

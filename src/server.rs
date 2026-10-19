@@ -49,6 +49,7 @@ pub(crate) struct AppState {
     cookie_key: Key,
     pub(crate) frames: watch::Receiver<Option<Frame>>,
     pub(crate) cursor: watch::Receiver<Option<Value>>,
+    pub(crate) title: watch::Receiver<String>,
     pub(crate) commands: mpsc::Sender<CdpInput>,
     pub(crate) ready: watch::Receiver<bool>,
     pub(crate) controller: Arc<Mutex<Option<String>>>,
@@ -71,6 +72,7 @@ pub(crate) async fn serve(
     let CdpSession {
         frames,
         cursor,
+        title,
         commands,
         ready,
     } = cdp;
@@ -80,6 +82,7 @@ pub(crate) async fn serve(
         cookie_key: Key::generate(),
         frames,
         cursor,
+        title,
         commands,
         ready,
         controller: Arc::new(Mutex::new(None)),
@@ -217,6 +220,11 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
     let mut fallback = None::<fallback::Fallback>;
     let mut frames = state.frames.clone();
     let mut cursor = state.cursor.clone();
+    let mut title = state.title.clone();
+    let initial_title = title.borrow_and_update().clone();
+    let _ = socket.send(BrowserMessage::Text(
+        json!({"type":"title","title":initial_title}).to_string().into(),
+    )).await;
     let initial_frame = { frames.borrow_and_update().clone() };
     let mut last_size = initial_frame
         .as_ref()
@@ -266,6 +274,11 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
                         last_size = Some(size);
                     }
                 }
+            }
+            result = title.changed() => {
+                if result.is_err() { break; }
+                let title = title.borrow_and_update().clone();
+                if socket.send(BrowserMessage::Text(json!({"type":"title","title":title}).to_string().into())).await.is_err() { break; }
             }
             result = cursor.changed() => {
                 if result.is_err() { break; }
