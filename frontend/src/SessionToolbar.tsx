@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import type { ConnectionState } from './remote';
 
@@ -9,6 +10,8 @@ type Props = {
 };
 
 export function SessionToolbar({ status, label, size }: Props) {
+    const { t } = useTranslation();
+
     const toolbarRef = useRef<HTMLDivElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
@@ -50,7 +53,7 @@ export function SessionToolbar({ status, label, size }: Props) {
             if (document.fullscreenElement) await document.exitFullscreen();
             else await document.documentElement.requestFullscreen();
         } catch {
-            setFullscreenError('无法切换全屏，请使用浏览器的全屏功能。');
+            setFullscreenError(t('toolbar.fullscreenError'));
         }
     }
 
@@ -84,7 +87,7 @@ export function SessionToolbar({ status, label, size }: Props) {
             <button
                 className="toolbar-trigger"
                 ref={triggerRef}
-                aria-label={open ? '收起会话工具栏' : '展开会话工具栏'}
+                aria-label={open ? t('toolbar.collapseSession') : t('toolbar.expandSession')}
                 aria-expanded={open}
                 aria-controls="session-controls"
                 onClick={() => setOpen(value => !value)}
@@ -97,7 +100,7 @@ export function SessionToolbar({ status, label, size }: Props) {
                 <div className="toolbar-row">
                     <div className="brand">
                         <span className="brand-mark" aria-hidden="true"><span /></span>
-                        <div><strong>CodexApp2Web</strong><small>远程桌面</small></div>
+                        <div><strong>CodexApp2Web</strong><small>{t('toolbar.desktop')}</small></div>
                     </div>
 
                     <div className="session-info">
@@ -105,17 +108,17 @@ export function SessionToolbar({ status, label, size }: Props) {
                             <span className={`connection-dot ${status === 'streaming' ? 'online' : ''}`} />{label}
                         </span>
 
-                        {size && <span className="resolution">远端 {size[0]} × {size[1]}</span>}
+                        {size && <span className="resolution">{t('toolbar.resolution', { width: size[0], height: size[1] })}</span>}
                     </div>
 
                     <div className="toolbar-actions">
-                        <button className="icon-button" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? '退出全屏' : '进入全屏'} title={fullscreen ? '退出全屏' : '进入全屏'}>
+                        <button className="icon-button" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')} title={fullscreen ? t('toolbar.exitFullscreen') : t('toolbar.enterFullscreen')}>
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
                                 <path d={fullscreen ? 'M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5' : 'M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5'} />
                             </svg>
                         </button>
 
-                        <button className="icon-button" onClick={close} aria-label="收起工具栏" title="收起工具栏">
+                        <button className="icon-button" onClick={close} aria-label={t('toolbar.collapse')} title={t('toolbar.collapse')}>
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>
                         </button>
                     </div>

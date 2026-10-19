@@ -1,3 +1,5 @@
+import { t } from './i18n.ts';
+
 import { createWebSocketVideo } from './websocket-video.ts';
 
 import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
@@ -121,8 +123,8 @@ export function startRemote(
         videoStarted = true;
         const signal = videoAbort.signal;
         onTransport('WebSocket');
-        onState('connecting', '正在切换 WebSocket');
-        const timeout = setTimeout(() => fail('WebSocket 视频连接超时'), FALLBACK_TIMEOUT_MS);
+        onState('connecting', t('connection.switching'));
+        const timeout = setTimeout(() => fail(t('connection.websocketTimeout')), FALLBACK_TIMEOUT_MS);
 
         function fail(message: string) {
             if (signal.aborted) return;
@@ -166,7 +168,7 @@ export function startRemote(
         }
 
         onTransport('WebRTC');
-        onState('connecting', '正在连接 WebRTC');
+        onState('connecting', t('connection.webrtcConnecting'));
 
         const peer = new RTCPeerConnection({
             iceServers: [{ urls: stunServers }],
@@ -177,12 +179,12 @@ export function startRemote(
         let offerSent = false;
         let hasUdpCandidate = false;
         let incomingSignals = Promise.resolve();
-        const timeout = setTimeout(() => fail('连接超时，请重试'), VIDEO_CONNECT_TIMEOUT_MS);
+        const timeout = setTimeout(() => fail(t('connection.timeout')), VIDEO_CONNECT_TIMEOUT_MS);
 
         function fail(message: string) {
             if (signal.aborted) return;
 
-            console.info(`${message}; switching to WebSocket video`);
+            console.info(t('connection.fallbackLog', { error: message }));
             startFallback();
         }
 
@@ -201,7 +203,7 @@ export function startRemote(
 
             if (candidate && / udp /i.test(candidate.candidate ?? '')) hasUdpCandidate = true;
             if (!candidate && !hasUdpCandidate) {
-                fail('浏览器未提供 UDP 候选');
+                fail(t('connection.noUdp'));
                 return;
             }
 
@@ -218,7 +220,7 @@ export function startRemote(
 
                 if (message.type === 'answer') await peer.setRemoteDescription(message.description);
                 else await peer.addIceCandidate(message.candidate ?? undefined);
-            }).catch(error => fail(`WebRTC 信令失败：${String(error)}`));
+            }).catch(error => fail(t('connection.signalingError', { error: String(error) })));
         };
 
         videoStarted = true;
@@ -239,13 +241,13 @@ export function startRemote(
             });
 
             void screen.play().catch(error => {
-                fail(`视频播放失败：${String(error)}`);
+                fail(t('connection.playbackError', { error: String(error) }));
             });
         };
 
         peer.onconnectionstatechange = () => {
             if (peer.connectionState === 'failed' && !signal.aborted) {
-                fail('WebRTC 连接失败，可能无法 UDP 打洞');
+                fail(t('connection.webrtcFailed'));
             }
         };
 
@@ -269,7 +271,7 @@ export function startRemote(
 
             pendingCandidates.length = 0;
         } catch (error) {
-            fail(`WebRTC 视频连接失败：${error instanceof Error ? error.message : String(error)}`);
+            fail(t('connection.webrtcError', { error: error instanceof Error ? error.message : String(error) }));
         }
     }
 

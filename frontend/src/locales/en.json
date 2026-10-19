@@ -1,0 +1,52 @@
+{
+    "status": {
+        "connecting": "Connecting",
+        "streaming": "Connected",
+        "occupied": "Desktop in use",
+        "disconnected": "Reconnecting…",
+        "unsupported": "Decoder unsupported",
+        "error": "Video unavailable",
+        "transport": "Connected · {{transport}}"
+    },
+    "accessibility": {
+        "desktop": "Codex remote desktop",
+        "screen": "Codex desktop video",
+        "keyboard": "Remote keyboard input"
+    },
+    "session": {
+        "occupied": "Another page has control. Take over to continue here; the other page will lose control",
+        "reconnecting": "Restoring the desktop connection. Please wait",
+        "preparing": "Preparing your remote desktop…",
+        "takeover": "Take control",
+        "reconnect": "Reconnect"
+    },
+    "toolbar": {
+        "fullscreenError": "Unable to toggle fullscreen. Please use your browser’s fullscreen controls",
+        "collapseSession": "Collapse session toolbar",
+        "expandSession": "Expand session toolbar",
+        "desktop": "Remote desktop",
+        "resolution": "Remote {{width}} × {{height}}",
+        "exitFullscreen": "Exit fullscreen",
+        "enterFullscreen": "Enter fullscreen",
+        "collapse": "Collapse toolbar"
+    },
+    "connection": {
+        "switching": "Switching to WebSocket",
+        "websocketTimeout": "WebSocket video connection timed out",
+        "webrtcConnecting": "Connecting to WebRTC",
+        "timeout": "Connection timed out. Please try again",
+        "noUdp": "The browser provided no UDP candidates",
+        "signalingError": "WebRTC signaling failed: {{error}}",
+        "playbackError": "Video playback failed: {{error}}",
+        "webrtcFailed": "WebRTC connection failed; UDP hole punching may be unavailable",
+        "webrtcError": "WebRTC video connection failed: {{error}}",
+        "fallbackLog": "{{error}}; switching to WebSocket video"
+    },
+    "video": {
+        "unsupported": "This Chrome browser does not support WebCodecs",
+        "canvasError": "Unable to create the video canvas",
+        "decodeError": "WebSocket video decoding failed: {{error}}",
+        "incomplete": "Incomplete video frame",
+        "missingKeyframe": "Video size changed without a keyframe"
+    }
+}

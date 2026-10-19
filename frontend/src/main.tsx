@@ -1,21 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useTranslation } from 'react-i18next';
+
+import './i18n.ts';
 
 import { startRemote, type ConnectionState, type VideoTransport } from './remote';
 import { SessionToolbar } from './SessionToolbar';
 
 import './style.css';
 
-const statusLabels: Record<ConnectionState, string> = {
-    connecting: '正在连接',
-    streaming: '已连接',
-    occupied: '桌面正在被控制',
-    disconnected: '连接中断，正在重试',
-    unsupported: '浏览器不支持视频解码',
-    error: '画面加载失败',
-};
-
 function App() {
+    const { t } = useTranslation();
+
     const stageRef = useRef<HTMLDivElement>(null);
     const screenRef = useRef<HTMLVideoElement>(null);
     const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -44,13 +40,13 @@ function App() {
     const waiting = status === 'connecting' || status === 'disconnected';
 
     return (
-        <main className="remote-desktop" aria-label="Codex 远程桌面">
+        <main className="remote-desktop" aria-label={t('accessibility.desktop')}>
             <div className="stage" ref={stageRef} inert={status !== 'streaming'}>
-                <video id="screen" ref={screenRef} aria-label="Codex 桌面画面" autoPlay muted playsInline />
-                <textarea id="keyboard" ref={keyboardRef} aria-label="远程键盘输入" autoCapitalize="off" autoComplete="off" spellCheck={false} />
+                <video id="screen" ref={screenRef} aria-label={t('accessibility.screen')} autoPlay muted playsInline />
+                <textarea id="keyboard" ref={keyboardRef} aria-label={t('accessibility.keyboard')} autoCapitalize="off" autoComplete="off" spellCheck={false} />
             </div>
 
-            <SessionToolbar status={status} label={status === 'streaming' && transport ? `已连接 · ${transport}` : status === 'connecting' && transport ? detail : statusLabels[status]} size={size} />
+            <SessionToolbar status={status} label={status === 'streaming' && transport ? t('status.transport', { transport }) : status === 'connecting' && transport ? detail : t(`status.${status}`)} size={size} />
 
             {status !== 'streaming' && (
                 <div className="session-overlay">
@@ -65,18 +61,18 @@ function App() {
                             )}
                         </span>
 
-                        <h1 id="session-title">{statusLabels[status]}</h1>
+                        <h1 id="session-title">{t(`status.${status}`)}</h1>
 
                         <p id="session-description">{detail || (status === 'occupied'
-                            ? '另一个页面拥有控制权。接管后，你可以在这里继续操作，原页面将停止控制。'
-                            : status === 'disconnected' ? '正在恢复桌面连接，请稍候。' : '正在准备你的远程桌面…')}</p>
+                            ? t('session.occupied')
+                            : status === 'disconnected' ? t('session.reconnecting') : t('session.preparing'))}</p>
 
                         {status === 'occupied' && (
-                            <button className="primary-button" onClick={() => remoteRef.current?.claim()}>抢占控制权</button>
+                            <button className="primary-button" onClick={() => remoteRef.current?.claim()}>{t('session.takeover')}</button>
                         )}
 
                         {status === 'error' && (
-                            <button className="primary-button" onClick={() => location.reload()}>重新连接</button>
+                            <button className="primary-button" onClick={() => location.reload()}>{t('session.reconnect')}</button>
                         )}
                     </section>
                 </div>

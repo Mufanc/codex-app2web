@@ -1,3 +1,5 @@
+import { t } from './i18n.ts';
+
 const CODEC = 'hev1.1.6.L153.B0';
 const HEADER_BYTES = 9;
 
@@ -8,14 +10,14 @@ export function createWebSocketVideo(
     acknowledge: (sequence: number) => void,
     onError: (message: string) => void,
 ) {
-    if (typeof VideoDecoder === 'undefined') throw new Error('此 Chrome 不支持 WebCodecs');
+    if (typeof VideoDecoder === 'undefined') throw new Error(t('video.unsupported'));
 
     const canvas = document.createElement('canvas');
     canvas.className = 'fallback-screen';
-    canvas.setAttribute('aria-label', 'Codex 桌面画面');
+    canvas.setAttribute('aria-label', t('accessibility.screen'));
     const context = canvas.getContext('2d', { alpha: false });
 
-    if (!context) throw new Error('无法创建视频画布');
+    if (!context) throw new Error(t('video.canvasError'));
 
     screen.after(canvas);
     screen.hidden = true;
@@ -39,7 +41,7 @@ export function createWebSocketVideo(
                 frame.close();
             }
         },
-        error(error) { if (!signal.aborted) onError(`WebSocket 视频解码失败：${error.message}`); },
+        error(error) { if (!signal.aborted) onError(t('video.decodeError', { error: error.message })); },
     });
 
     signal.addEventListener('abort', () => {
@@ -52,7 +54,7 @@ export function createWebSocketVideo(
         if (signal.aborted) return;
 
         try {
-            if (data.byteLength <= HEADER_BYTES) throw new Error('视频帧不完整');
+            if (data.byteLength <= HEADER_BYTES) throw new Error(t('video.incomplete'));
 
             const header = new DataView(data);
             const sequence = header.getUint32(0);
@@ -62,7 +64,7 @@ export function createWebSocketVideo(
             const nextSize = `${width}x${height}`;
 
             if (nextSize !== size) {
-                if (!keyframe) throw new Error('视频尺寸变化缺少关键帧');
+                if (!keyframe) throw new Error(t('video.missingKeyframe'));
 
                 decoder.configure({ codec: CODEC, codedWidth: width, codedHeight: height, optimizeForLatency: true });
                 size = nextSize;
@@ -73,7 +75,7 @@ export function createWebSocketVideo(
                 type: keyframe ? 'key' : 'delta', timestamp: timestamp++, data: new Uint8Array(data, HEADER_BYTES),
             }));
         } catch (error) {
-            onError(`WebSocket 视频解码失败：${String(error)}`);
+            onError(t('video.decodeError', { error: String(error) }));
         }
     };
 }

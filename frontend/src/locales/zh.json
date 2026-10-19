@@ -1,0 +1,52 @@
+{
+    "status": {
+        "connecting": "正在连接",
+        "streaming": "已连接",
+        "occupied": "桌面正在被控制",
+        "disconnected": "连接中断，正在重试",
+        "unsupported": "浏览器不支持视频解码",
+        "error": "画面加载失败",
+        "transport": "已连接 · {{transport}}"
+    },
+    "accessibility": {
+        "desktop": "Codex 远程桌面",
+        "screen": "Codex 桌面画面",
+        "keyboard": "远程键盘输入"
+    },
+    "session": {
+        "occupied": "另一个页面拥有控制权。接管后，你可以在这里继续操作，原页面将停止控制",
+        "reconnecting": "正在恢复桌面连接，请稍候",
+        "preparing": "正在准备你的远程桌面…",
+        "takeover": "抢占控制权",
+        "reconnect": "重新连接"
+    },
+    "toolbar": {
+        "fullscreenError": "无法切换全屏，请使用浏览器的全屏功能",
+        "collapseSession": "收起会话工具栏",
+        "expandSession": "展开会话工具栏",
+        "desktop": "远程桌面",
+        "resolution": "远端 {{width}} × {{height}}",
+        "exitFullscreen": "退出全屏",
+        "enterFullscreen": "进入全屏",
+        "collapse": "收起工具栏"
+    },
+    "connection": {
+        "switching": "正在切换 WebSocket",
+        "websocketTimeout": "WebSocket 视频连接超时",
+        "webrtcConnecting": "正在连接 WebRTC",
+        "timeout": "连接超时，请重试",
+        "noUdp": "浏览器未提供 UDP 候选",
+        "signalingError": "WebRTC 信令失败：{{error}}",
+        "playbackError": "视频播放失败：{{error}}",
+        "webrtcFailed": "WebRTC 连接失败，可能无法 UDP 打洞",
+        "webrtcError": "WebRTC 视频连接失败：{{error}}",
+        "fallbackLog": "{{error}}；正在切换 WebSocket 视频"
+    },
+    "video": {
+        "unsupported": "此 Chrome 不支持 WebCodecs",
+        "canvasError": "无法创建视频画布",
+        "decodeError": "WebSocket 视频解码失败：{{error}}",
+        "incomplete": "视频帧不完整",
+        "missingKeyframe": "视频尺寸变化缺少关键帧"
+    }
+}
