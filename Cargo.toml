@@ -40,3 +40,7 @@ opt-level = 3
 [profile.dev.package.zune-jpeg]
 opt-level = 3
 
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
