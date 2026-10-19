@@ -40,6 +40,9 @@ pub(crate) enum VideoSignal {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ServerMessage {
+    Menu {
+        menu: Option<Value>,
+    },
     Title {
         title: String,
     },

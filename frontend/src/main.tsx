@@ -6,6 +6,8 @@ import './i18n.ts';
 
 import { startRemote, type ConnectionState, type VideoTransport } from './remote';
 import { SessionToolbar } from './SessionToolbar';
+import { ContextMenu } from './ContextMenu';
+import type { NativeMenu } from './protocol';
 
 import './style.css';
 
@@ -21,6 +23,7 @@ function App() {
     const [transport, setTransport] = useState<VideoTransport | null>(null);
     const [detail, setDetail] = useState('');
     const [size, setSize] = useState<[number, number] | null>(null);
+    const [menu, setMenu] = useState<NativeMenu | null>(null);
 
     useEffect(() => {
         const remote = startRemote(
@@ -33,6 +36,7 @@ function App() {
             },
             (width, height) => setSize([width, height]),
             setTransport,
+            setMenu,
         );
 
         remoteRef.current = remote;
@@ -70,6 +74,18 @@ function App() {
                 }
                 size={size}
             />
+
+            {menu && status === 'streaming' && (
+                <ContextMenu
+                    key={menu.id}
+                    menu={menu}
+                    onSelect={(selected) => {
+                        remoteRef.current?.selectMenu(menu.id, selected);
+                        setMenu(null);
+                        keyboardRef.current?.focus({ preventScroll: true });
+                    }}
+                />
+            )}
 
             {status !== 'streaming' && (
                 <div className="session-overlay">

@@ -190,6 +190,7 @@ export function createInput(
     stage.addEventListener('pointercancel', onBlur);
 
     return {
+        pictureRect,
         placeKeyboard,
         reset,
         dispose() {

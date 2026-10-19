@@ -77,6 +77,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
     let mut frames = cdp.frames.clone();
     let mut cursor = cdp.cursor.clone();
     let mut title = cdp.title.clone();
+    let mut menu = cdp.menu.clone();
 
     let run = async {
         send(
@@ -116,6 +117,10 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                 result = title.changed() => {
                     result?;
                     send(&control_tx, ServerMessage::Title { title: title.borrow_and_update().clone() })?;
+                }
+                result = menu.changed() => {
+                    result?;
+                    send(&control_tx, ServerMessage::Menu { menu: menu.borrow_and_update().clone() })?;
                 }
                 message = signals_rx.recv() => {
                     let signal = message?;

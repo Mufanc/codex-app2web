@@ -74,6 +74,7 @@ async fn caret_geometry_and_listener_lifecycle_in_chrome() -> anyhow::Result<()>
         let (owner, ownership) = tokio::sync::watch::channel(Some(2));
         let (ready, mut readiness) = tokio::sync::watch::channel(false);
         let updates = super::Updates {
+            menu: tokio::sync::watch::channel(None).0,
             frames: tokio::sync::watch::channel(None).0,
             cursor: tokio::sync::watch::channel(None).0,
             title: tokio::sync::watch::channel(String::new()).0,

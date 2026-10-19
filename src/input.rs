@@ -19,6 +19,10 @@ const SINGLE_CLICK_COUNT: i64 = 1;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Input {
     Reset,
+    MenuResult {
+        id: String,
+        selected: Option<String>,
+    },
     Mouse {
         action: String,
         x: f64,
@@ -51,6 +55,12 @@ pub(crate) enum Input {
 pub(crate) fn input_command(input: Input) -> Option<CdpInput> {
     match input {
         Input::Reset => Some(CdpInput::Reset),
+        Input::MenuResult { id, selected }
+            if id.len() <= MAX_INPUT_STRING_BYTES
+                && selected.as_ref().is_none_or(|value| value.len() <= MAX_INPUT_STRING_BYTES) =>
+        {
+            Some(CdpInput::MenuResult { id, selected })
+        }
         Input::Mouse {
             action,
             x,

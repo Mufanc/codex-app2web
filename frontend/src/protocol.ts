@@ -3,7 +3,20 @@ export const MAX_VIDEO_HEIGHT = 2160;
 
 export type Point = { x: number; y: number };
 
+export type MenuItem = {
+    id?: string;
+    label: string;
+    type?: 'separator' | 'radio';
+    enabled?: boolean;
+    checked?: boolean;
+    accelerator?: string;
+    submenu?: MenuItem[];
+};
+
+export type NativeMenu = Point & { id: string; items: MenuItem[] };
+
 export type InputMessage =
+    | { type: 'menu_result'; id: string; selected: string | null }
     | { type: 'reset' }
     | { type: 'resize'; width: number; height: number }
     | { type: 'text'; text: string }
@@ -28,6 +41,7 @@ export type VideoSignal =
     | { type: 'ice'; video_id: string; candidate: RTCIceCandidateInit | null };
 
 export type ServerMessage =
+    | { type: 'menu'; menu: NativeMenu | null }
     | VideoSignal
     | { type: 'size'; width: number; height: number }
     | { type: 'title'; title: string }

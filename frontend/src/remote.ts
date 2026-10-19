@@ -8,6 +8,7 @@ import {
     type ClientMessage,
     type ServerMessage,
     type VideoSignal,
+    type NativeMenu,
 } from './protocol.ts';
 
 export type VideoTransport = 'WebRTC' | 'WebSocket';
@@ -22,6 +23,7 @@ export function startRemote(
     onState: (state: ConnectionState, detail?: string) => void,
     onSize: (width: number, height: number) => void,
     onTransport: (transport: VideoTransport | null) => void = () => {},
+    onMenu: (menu: NativeMenu | null) => void = () => {},
 ) {
     const defaultTitle = document.title;
 
@@ -183,6 +185,7 @@ export function startRemote(
     }
 
     function connect(claim = false) {
+        onMenu(null);
         if (disposed) return;
 
         generation++;
@@ -246,6 +249,21 @@ export function startRemote(
 
             if (message.type === 'cursor') input.placeKeyboard(message.point);
 
+            if (message.type === 'menu') {
+                const rect = input.pictureRect();
+                const area = stage.getBoundingClientRect();
+
+                onMenu(
+                    message.menu && rect
+                        ? {
+                              ...message.menu,
+                              x: area.left + rect.left + (message.menu.x / sourceWidth) * rect.width,
+                              y: area.top + rect.top + (message.menu.y / sourceHeight) * rect.height,
+                          }
+                        : null,
+                );
+            }
+
             if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
 
             if (message.type === 'video_error') {
@@ -263,6 +281,7 @@ export function startRemote(
         socket.onclose = (event) => {
             if (disposed || socket !== current) return;
             socket = undefined;
+            onMenu(null);
             input.reset(false);
             document.title = defaultTitle;
             videoAbort?.abort();
@@ -297,8 +316,10 @@ export function startRemote(
 
     return {
         claim: () => connect(true),
+        selectMenu: (id: string, selected: string | null) => send({ type: 'menu_result', id, selected }),
 
         dispose: () => {
+            onMenu(null);
             input.dispose();
             disposed = true;
             document.title = defaultTitle;

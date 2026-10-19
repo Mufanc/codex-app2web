@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chromiumoxide::browser::Browser;
-use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchMouseEventParams, InsertTextParams};
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchMouseEventParams, DispatchMouseEventType, InsertTextParams, MouseButton,
+};
 use chromiumoxide::cdp::browser_protocol::page::{
     EventDomContentEventFired, EventScreencastFrame, ScreencastFrameAckParams, StartScreencastFormat,
     StartScreencastParams, StopScreencastParams,
@@ -15,7 +17,9 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn, Instrument};
 
 mod held_input;
+mod menu;
 use self::held_input::HeldInput;
+use self::menu::MenuProxy;
 
 #[cfg(test)]
 mod cursor_test;
@@ -27,6 +31,7 @@ const TITLE_BINDING: &str = "__codexApp2WebTitleChanged";
 const CURSOR_SCRIPT: &str = include_str!("cdp/cursor.js");
 const CURSOR_STOP_SCRIPT: &str = "globalThis.__codexApp2WebCursor?.stop()";
 const CURSOR_BINDING: &str = "__codexApp2WebCaret";
+const MENU_BINDING: &str = "__codexApp2WebMenuChanged";
 
 #[derive(Clone)]
 pub(crate) struct Frame {
@@ -41,6 +46,7 @@ pub(crate) enum CdpInput {
     Text(InsertTextParams),
     Resize(u32, u32),
     Reset,
+    MenuResult { id: String, selected: Option<String> },
 }
 
 pub(crate) struct Command {
@@ -53,6 +59,7 @@ pub(crate) struct CdpSession {
     pub(crate) frames: watch::Receiver<Option<Frame>>,
     pub(crate) cursor: watch::Receiver<Option<Value>>,
     pub(crate) title: watch::Receiver<String>,
+    pub(crate) menu: watch::Receiver<Option<Value>>,
     pub(crate) commands: mpsc::Sender<Command>,
     pub(crate) ready: watch::Receiver<bool>,
 }
@@ -62,6 +69,7 @@ struct Updates {
     frames: watch::Sender<Option<Frame>>,
     cursor: watch::Sender<Option<Value>>,
     title: watch::Sender<String>,
+    menu: watch::Sender<Option<Value>>,
     ready: watch::Sender<bool>,
 }
 
@@ -70,6 +78,7 @@ pub(crate) fn connect(cdp_port: u16, ownership: watch::Receiver<Option<u64>>) ->
     let (frame_tx, frames) = watch::channel(None);
     let (cursor_tx, cursor) = watch::channel(None);
     let (title_tx, title) = watch::channel(String::new());
+    let (menu_tx, menu) = watch::channel(None);
     let (ready_tx, ready) = watch::channel(false);
 
     tokio::spawn(reconnect(
@@ -79,6 +88,7 @@ pub(crate) fn connect(cdp_port: u16, ownership: watch::Receiver<Option<u64>>) ->
             frames: frame_tx,
             cursor: cursor_tx,
             title: title_tx,
+            menu: menu_tx,
             ready: ready_tx,
         },
         ownership,
@@ -88,6 +98,7 @@ pub(crate) fn connect(cdp_port: u16, ownership: watch::Receiver<Option<u64>>) ->
         frames,
         cursor,
         title,
+        menu,
         commands,
         ready,
     }
@@ -113,6 +124,7 @@ async fn reconnect(
         updates.frames.send_replace(None);
         updates.cursor.send_replace(None);
         updates.title.send_replace(String::new());
+        updates.menu.send_replace(None);
 
         if was_connected {
             delay = Duration::from_secs(1);
@@ -200,6 +212,7 @@ async fn run_cdp(
         frames,
         cursor,
         title,
+        menu,
         ready,
     } = updates;
     let mut events = page.event_listener::<EventScreencastFrame>().await?;
@@ -212,6 +225,15 @@ async fn run_cdp(
 
     page.execute(AddBindingParams::new(TITLE_BINDING)).await?;
     evaluate_script(&page, TITLE_SCRIPT).await?;
+    page.execute(AddBindingParams::new(MENU_BINDING)).await?;
+
+    let mut menu_proxy = match MenuProxy::install(&page).await {
+        Ok(proxy) => Some(proxy),
+        Err(error) => {
+            warn!(%error, "Native menu proxy unavailable; keeping native menus");
+            None
+        }
+    };
 
     held.release(&page).await?;
     ready.send_replace(true);
@@ -229,6 +251,8 @@ async fn run_cdp(
         let current = *ownership.borrow_and_update();
 
         if current != owner {
+            if let Some(proxy) = &menu_proxy { proxy.execute(&page, "cancel()").await?; }
+            menu.send_replace(None);
             held.release(&page).await?;
             evaluate_script(&page, CURSOR_STOP_SCRIPT).await?;
             cursor.send_replace(None);
@@ -243,6 +267,18 @@ async fn run_cdp(
         tokio::select! {
             _ = ownership.changed() => continue,
             Some(event) = caret_events.next() => {
+                if event.name == MENU_BINDING {
+                    if owner.is_some() {
+                        if let Ok(value) = serde_json::from_str::<Value>(&event.payload) {
+                            if value.is_null() || value.get("owner").and_then(Value::as_u64) == owner {
+                                menu.send_replace(if value.is_null() { None } else { Some(value) });
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
                 if event.name == TITLE_BINDING {
                     title.send_if_modified(|current| {
                         if *current == event.payload { return false; }
@@ -270,6 +306,11 @@ async fn run_cdp(
                 });
             }
             Some(_) = loaded.next() => {
+                menu.send_replace(None);
+                menu_proxy = match MenuProxy::install(&page).await {
+                    Ok(proxy) => Some(proxy),
+                    Err(error) => { warn!(%error, "Native menu proxy unavailable after reload"); None }
+                };
                 evaluate_script(&page, TITLE_SCRIPT).await?;
                 if viewport_size.is_some() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
             }
@@ -296,7 +337,16 @@ async fn run_cdp(
                 if Some(command.owner) != owner { pending_command = Some(command); continue; }
 
                 match command.input {
-                    CdpInput::Mouse(params) => { held.mouse(&params); if let Err(error) = page.execute(params).await { warn!(%error, "Mouse input failed"); } }
+                    CdpInput::Mouse(params) => {
+                        if params.button == Some(MouseButton::Right)
+                            && matches!(params.r#type, DispatchMouseEventType::MousePressed | DispatchMouseEventType::MouseReleased) {
+                            if let Some(proxy) = &menu_proxy { proxy.execute(&page, &format!("arm({})", command.owner)).await?; }
+                        }
+
+                        held.mouse(&params);
+
+                        if let Err(error) = page.execute(params).await { warn!(%error, "Mouse input failed"); }
+                    }
                     CdpInput::Key(params) => { held.key(&params); if let Err(error) = page.execute(params).await { warn!(%error, "Key input failed"); } }
                     CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { warn!(%error, "Text input failed"); } }
                     CdpInput::Resize(width, height) => {
@@ -309,7 +359,14 @@ async fn run_cdp(
                             configure_capture(&page, &frames, &mut capture_size, desired).await?;
                         }
                     }
-                    CdpInput::Reset => { held.release(&page).await?; }
+                    CdpInput::Reset => {
+                        held.release(&page).await?;
+                    }
+                    CdpInput::MenuResult { id, selected } => {
+                        if let Some(proxy) = &menu_proxy {
+                            proxy.execute(&page, &format!("respond({}, {})", serde_json::to_string(&id)?, serde_json::to_string(&selected)?)).await?;
+                        }
+                    }
                 }
             }
             event = events.next() => {
@@ -341,6 +398,11 @@ async fn run_cdp(
     }.await;
 
     let _ = held.release(&page).await;
+
+    if let Some(proxy) = &menu_proxy {
+        let _ = proxy.execute(&page, "stop()").await;
+    }
+
     let _ = evaluate_script(&page, CURSOR_STOP_SCRIPT).await;
     let _ = evaluate_script(&page, TITLE_STOP_SCRIPT).await;
 
