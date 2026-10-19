@@ -19,8 +19,9 @@ use tokio::sync::{broadcast, mpsc, watch, Mutex};
 use crate::cdp::{CdpInput, CdpSession, Frame};
 use crate::input::{input_command, Input};
 use crate::webrtc_video;
-use crate::webrtc_video::VideoSignal;
+use crate::webrtc_video::{VideoSession, VideoSignal};
 
+mod fallback;
 mod session_cookie;
 
 const SIGNAL_QUEUE_CAPACITY: usize = 128;
@@ -29,8 +30,16 @@ const MAX_CLIENT_MESSAGE_BYTES: usize = 132 * 1024;
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ClientMessage {
+    Fallback(FallbackCommand),
     Video(VideoSignal),
     Input(Input),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum FallbackCommand {
+    Fallback,
+    VideoAck { sequence: u32 },
 }
 
 static FRONTEND: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
@@ -204,7 +213,8 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
     }
 
     let (signals_tx, mut signals_rx) = broadcast::channel::<Value>(SIGNAL_QUEUE_CAPACITY);
-    let mut video_session = None;
+    let mut video_session = None::<VideoSession>;
+    let mut fallback = None::<fallback::Fallback>;
     let mut frames = state.frames.clone();
     let mut cursor = state.cursor.clone();
     let initial_frame = { frames.borrow_and_update().clone() };
@@ -266,18 +276,47 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
                 let Ok(signal) = signal else { break; };
                 if socket.send(BrowserMessage::Text(signal.to_string().into())).await.is_err() { break; }
             }
+            packet = async {
+                match fallback.as_mut() {
+                    Some(video) => video.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match packet {
+                    Ok(data) => {
+                        if tokio::time::timeout(std::time::Duration::from_secs(10), socket.send(BrowserMessage::Binary(data))).await.map_or(true, |result| result.is_err()) { break; }
+                    }
+                    Err(error) => {
+                        let _ = socket.send(BrowserMessage::Text(json!({"type":"video_error","message":error.to_string()}).to_string().into())).await;
+                        break;
+                    }
+                }
+            }
             message = socket.recv() => {
                 if state.controller.lock().await.as_deref() != Some(id.as_str()) { break; }
                 let Some(Ok(BrowserMessage::Text(text))) = message else { break; };
                 let Ok(message) = serde_json::from_str::<ClientMessage>(&text) else { continue; };
 
                 match message {
+                    ClientMessage::Fallback(command) => match command {
+                        FallbackCommand::Fallback => {
+                            if fallback.is_none() {
+                                if let Some(session) = video_session.take() { session.close().await; }
+                                fallback = Some(fallback::Fallback::start(state.frames.clone()));
+                                eprintln!("Video transport: WebSocket");
+                            }
+                        }
+                        FallbackCommand::VideoAck { sequence } => {
+                            if let Some(video) = fallback.as_mut() { video.acknowledge(sequence); }
+                        }
+                    },
                     ClientMessage::Input(input) => {
                         if let Some(command) = input_command(input) {
                             if state.commands.send(command).await.is_err() { break; }
                         }
                     }
                     ClientMessage::Video(message) => {
+                        if fallback.is_some() { continue; }
                         match webrtc_video::signal(&state, &id, &mut video_session, message, &signals_tx).await {
                             Ok(Some(answer)) => {
                                 if socket.send(BrowserMessage::Text(answer.to_string().into())).await.is_err() { break; }
@@ -288,13 +327,16 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
                                 let _ = socket.send(BrowserMessage::Text(json!({
                                     "type": "video_error", "message": error.to_string(),
                                 }).to_string().into())).await;
-                                break;
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    if let Some(video) = fallback {
+        video.close().await;
     }
 
     if let Some(session) = video_session {

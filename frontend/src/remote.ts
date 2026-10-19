@@ -1,4 +1,8 @@
+import { createWebSocketVideo } from './websocket-video.ts';
+
 import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
+
+export type VideoTransport = 'WebRTC' | 'WebSocket';
 
 export type ConnectionState = 'connecting' | 'streaming' | 'occupied' | 'disconnected' | 'unsupported' | 'error';
 
@@ -11,7 +15,8 @@ type Picture = { left: number; top: number; width: number; height: number };
 
 const MAX_VIDEO_WIDTH = 4096;
 const MAX_VIDEO_HEIGHT = 2160;
-const VIDEO_CONNECT_TIMEOUT_MS = 30_000;
+const VIDEO_CONNECT_TIMEOUT_MS = 8_000;
+const FALLBACK_TIMEOUT_MS = 15_000;
 
 export function startRemote(
     stage: HTMLElement,
@@ -19,6 +24,7 @@ export function startRemote(
     keyboard: HTMLTextAreaElement,
     onState: (state: ConnectionState, detail?: string) => void,
     onSize: (width: number, height: number) => void,
+    onTransport: (transport: VideoTransport | null) => void = () => {},
 ) {
     const sessionId = crypto.randomUUID();
     const pressed = new Set<string>();
@@ -30,6 +36,7 @@ export function startRemote(
     let decodedSize: [number, number] | null = null;
     let socket: WebSocket | undefined;
     let videoAbort: AbortController | undefined;
+    let receiveVideoFrame: ((data: ArrayBuffer) => void) | undefined;
     let receiveVideoSignal: ((message: VideoSignal) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -107,6 +114,39 @@ export function startRemote(
 
     resizeObserver.observe(stage);
 
+    function startFallback() {
+        videoAbort?.abort();
+        videoAbort = new AbortController();
+        videoStarted = true;
+        const signal = videoAbort.signal;
+        onTransport('WebSocket');
+        onState('connecting', '正在切换 WebSocket');
+        const timeout = setTimeout(() => fail('WebSocket 视频连接超时'), FALLBACK_TIMEOUT_MS);
+
+        function fail(message: string) {
+            if (signal.aborted) return;
+            videoAbort?.abort();
+            onState('error', message);
+        }
+
+        signal.addEventListener('abort', () => {
+            clearTimeout(timeout);
+            receiveVideoFrame = undefined;
+            decodedSize = null;
+        }, { once: true });
+
+        try {
+            receiveVideoFrame = createWebSocketVideo(screen, signal, (width, height) => {
+                clearTimeout(timeout);
+                decodedSize = [width, height];
+                onState('streaming');
+            }, sequence => send({ type: 'video_ack', sequence }), fail);
+            send({ type: 'fallback' });
+        } catch (error) {
+            fail(String(error));
+        }
+    }
+
     async function startVideo() {
         if (videoStarted && !videoAbort?.signal.aborted) return;
 
@@ -119,10 +159,13 @@ export function startRemote(
             : undefined;
 
         if (!hevc?.length) {
-            onState('unsupported', '此 Chrome 或系统不支持 WebRTC H.265');
+            startFallback();
 
             return;
         }
+
+        onTransport('WebRTC');
+        onState('connecting', '正在连接 WebRTC');
 
         const peer = new RTCPeerConnection({
             iceServers: [{ urls: stunServers }],
@@ -131,15 +174,15 @@ export function startRemote(
         const videoId = crypto.randomUUID();
         const pendingCandidates: (RTCIceCandidateInit | null)[] = [];
         let offerSent = false;
+        let hasUdpCandidate = false;
         let incomingSignals = Promise.resolve();
         const timeout = setTimeout(() => fail('连接超时，请重试'), VIDEO_CONNECT_TIMEOUT_MS);
 
         function fail(message: string) {
             if (signal.aborted) return;
 
-            videoStarted = false;
-            videoAbort?.abort();
-            onState('error', message);
+            console.info(`${message}; switching to WebSocket video`);
+            startFallback();
         }
 
         signal.addEventListener('abort', () => {
@@ -154,6 +197,12 @@ export function startRemote(
             if (signal.aborted) return;
 
             const candidate = event.candidate?.toJSON() ?? null;
+
+            if (candidate && / udp /i.test(candidate.candidate ?? '')) hasUdpCandidate = true;
+            if (!candidate && !hasUdpCandidate) {
+                fail('浏览器未提供 UDP 候选');
+                return;
+            }
 
             if (offerSent) send({ type: 'ice', video_id: videoId, candidate });
             else pendingCandidates.push(candidate);
@@ -309,12 +358,20 @@ export function startRemote(
     function connect(claim = false) {
         if (disposed) return;
 
+        onTransport(null);
         onState('connecting');
         socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?id=${sessionId}${claim ? '&takeover=true' : ''}`);
+
+        socket.binaryType = 'arraybuffer';
 
         socket.onopen = () => resizeVideo(true);
 
         socket.onmessage = event => {
+            if (event.data instanceof ArrayBuffer) {
+                receiveVideoFrame?.(event.data);
+                return;
+            }
+
             const message = JSON.parse(event.data);
 
             if (message.type === 'size') {
@@ -336,6 +393,11 @@ export function startRemote(
             if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
 
             if (message.type === 'video_error') {
+                if (!receiveVideoFrame) {
+                    startFallback();
+                    return;
+                }
+
                 videoAbort?.abort();
                 videoStarted = false;
                 onState('error', message.message);

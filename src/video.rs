@@ -22,18 +22,33 @@ const ENCODE_TIMEOUT: Duration = Duration::from_millis(500);
 const MIN_BITRATE: u64 = 150_000;
 const MAX_BITRATE: u64 = 20_000_000;
 
+pub(crate) struct EncodedSample {
+    pub(crate) data: Vec<u8>,
+    pub(crate) duration: Duration,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) keyframe: bool,
+}
+
+pub(crate) enum Output {
+    WebRtc {
+        track: Arc<TrackLocalStaticSample>,
+        ssrc: u32,
+        payload_type: u8,
+    },
+    WebSocket(mpsc::Sender<EncodedSample>),
+}
+
 pub(crate) async fn stream(
     frames: watch::Receiver<Option<Frame>>,
-    track: Arc<TrackLocalStaticSample>,
-    ssrc: u32,
-    payload_type: u8,
+    output: Output,
     max_width: u32,
     max_height: u32,
     target_bitrate: Arc<AtomicU64>,
     stop: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let (jpeg_tx, jpeg_rx) = mpsc::channel(1);
-    let (sample_tx, mut sample_rx) = mpsc::channel::<(Vec<u8>, Duration)>(2);
+    let (sample_tx, mut sample_rx) = mpsc::channel::<EncodedSample>(1);
     let worker = tokio::task::spawn_blocking(move || {
         if let Err(error) = encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate) {
             eprintln!("HEVC encoder: {error:#}");
@@ -44,51 +59,66 @@ pub(crate) async fn stream(
     let mut stop = stop;
     let mut previous_jpeg = None;
 
-    loop {
-        tokio::select! {
-            _ = stop.changed() => break,
-            _ = ticker.tick() => {
-                let frame = frames.borrow_and_update().clone();
-                if let Some(frame) = frame {
-                    if previous_jpeg.as_ref() != Some(&frame.jpeg) {
-                        if jpeg_tx.try_send(frame.jpeg.clone()).is_ok() {
-                            previous_jpeg = Some(frame.jpeg);
+    let result = async {
+        loop {
+            tokio::select! {
+                _ = stop.changed() => break,
+                _ = ticker.tick() => {
+                    let frame = frames.borrow_and_update().clone();
+                    if let Some(frame) = frame {
+                        if previous_jpeg.as_ref() != Some(&frame.jpeg) {
+                            if jpeg_tx.try_send(frame.jpeg.clone()).is_ok() {
+                                previous_jpeg = Some(frame.jpeg);
+                            }
                         }
                     }
                 }
-            }
-            sample = sample_rx.recv() => {
-                let Some((data, duration)) = sample else { break };
-                let gap = duration.saturating_sub(FRAME_INTERVAL);
+                sample = sample_rx.recv() => {
+                    let Some(sample) = sample else { break };
+                    let Output::WebRtc { track, ssrc, payload_type } = &output else {
+                        if let Output::WebSocket(tx) = &output {
+                            tokio::select! {
+                                _ = stop.changed() => break,
+                                result = tx.send(sample) => { if result.is_err() { break; } }
+                            }
+                        }
+                        continue;
+                    };
+                    let EncodedSample { data, duration, .. } = sample;
+                    let gap = duration.saturating_sub(FRAME_INTERVAL);
 
-                if !gap.is_zero() {
-                    // Packetizer advances RTP time after each sample, so skip idle time before this frame.
-                    track.sample_writer(ssrc, payload_type).write_sample(&Sample {
-                        data: Bytes::new(),
-                        duration: gap,
+                    if !gap.is_zero() {
+                        // Packetizer advances RTP time after each sample, so skip idle time before this frame.
+                        track.sample_writer(*ssrc, *payload_type).write_sample(&Sample {
+                            data: Bytes::new(),
+                            duration: gap,
+                            ..Sample::new(Instant::now())
+                        }).await?;
+                    }
+
+                    track.sample_writer(*ssrc, *payload_type).write_sample(&Sample {
+                        data: Bytes::from(data),
+                        duration: FRAME_INTERVAL,
                         ..Sample::new(Instant::now())
                     }).await?;
                 }
-
-                track.sample_writer(ssrc, payload_type).write_sample(&Sample {
-                    data: Bytes::from(data),
-                    duration: FRAME_INTERVAL,
-                    ..Sample::new(Instant::now())
-                }).await?;
             }
         }
+
+        Ok::<_, anyhow::Error>(())
     }
+    .await;
 
     drop(jpeg_tx);
     drop(sample_rx);
     worker.await?;
 
-    Ok(())
+    result
 }
 
 fn encode(
     mut jpeg_rx: mpsc::Receiver<Vec<u8>>,
-    sample_tx: mpsc::Sender<(Vec<u8>, Duration)>,
+    sample_tx: mpsc::Sender<EncodedSample>,
     max_width: u32,
     max_height: u32,
     target_bitrate: Arc<AtomicU64>,
@@ -170,9 +200,19 @@ fn encode(
         let duration =
             previous_frame.map_or(FRAME_INTERVAL, |then: Instant| now.duration_since(then));
         previous_frame = Some(now);
+        let keyframe = frame.keyframe;
         let data = annex_b(frame)?;
 
-        if sample_tx.blocking_send((data, duration)).is_err() {
+        if sample_tx
+            .blocking_send(EncodedSample {
+                data,
+                duration,
+                width,
+                height,
+                keyframe,
+            })
+            .is_err()
+        {
             break;
         }
     }

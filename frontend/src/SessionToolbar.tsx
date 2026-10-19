@@ -121,7 +121,7 @@ export function SessionToolbar({ status, label, size }: Props) {
                     </div>
                 </div>
 
-                <p className="toolbar-hint">{fullscreenError || '点击画面即可操作 · 移到顶部显示工具栏'}</p>
+                {fullscreenError && <p className="toolbar-hint" role="alert">{fullscreenError}</p>}
             </div>
 
             <span className="sr-only" role="status">{label}</span>

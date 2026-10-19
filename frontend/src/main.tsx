@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { startRemote, type ConnectionState } from './remote';
+import { startRemote, type ConnectionState, type VideoTransport } from './remote';
 import { SessionToolbar } from './SessionToolbar';
 
 import './style.css';
@@ -22,6 +22,7 @@ function App() {
     const remoteRef = useRef<ReturnType<typeof startRemote> | null>(null);
 
     const [status, setStatus] = useState<ConnectionState>('connecting');
+    const [transport, setTransport] = useState<VideoTransport | null>(null);
     const [detail, setDetail] = useState('');
     const [size, setSize] = useState<[number, number] | null>(null);
 
@@ -32,6 +33,7 @@ function App() {
             keyboardRef.current!,
             (next, message) => { setStatus(next); setDetail(message ?? ''); },
             (width, height) => setSize([width, height]),
+            setTransport,
         );
 
         remoteRef.current = remote;
@@ -48,7 +50,7 @@ function App() {
                 <textarea id="keyboard" ref={keyboardRef} aria-label="远程键盘输入" autoCapitalize="off" autoComplete="off" spellCheck={false} />
             </div>
 
-            <SessionToolbar status={status} label={statusLabels[status]} size={size} />
+            <SessionToolbar status={status} label={status === 'streaming' && transport ? `已连接 · ${transport}` : status === 'connecting' && transport ? detail : statusLabels[status]} size={size} />
 
             {status !== 'streaming' && (
                 <div className="session-overlay">

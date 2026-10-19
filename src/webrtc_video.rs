@@ -55,11 +55,18 @@ pub(crate) enum VideoSignal {
 pub(crate) struct VideoSession {
     id: String,
     peer: Arc<dyn PeerConnection>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    stop: watch::Sender<bool>,
 }
 
 impl VideoSession {
-    pub(crate) async fn close(&self) {
-        let _ = self.peer.close().await;
+    pub(crate) async fn close(self) {
+        self.stop.send_replace(true);
+        if let Some(task) = self.task {
+            let _ = task.await;
+        } else {
+            let _ = self.peer.close().await;
+        }
     }
 }
 
@@ -301,9 +308,12 @@ async fn start_session(
             return Err(error);
         }
     };
-    let session = VideoSession {
+    let (stop, stopped) = watch::channel(false);
+    let mut session = VideoSession {
         id: video_id,
         peer: peer.clone(),
+        task: None,
+        stop,
     };
 
     let controller = state.controller.lock().await;
@@ -322,9 +332,8 @@ async fn start_session(
 
     drop(controller);
 
-    tokio::spawn(async move {
+    session.task = Some(tokio::spawn(async move {
         if let Err(error) = run_session(
-            peer.clone(),
             sender,
             track,
             ssrc,
@@ -333,6 +342,7 @@ async fn start_session(
             id,
             generation,
             connected,
+            stopped,
             width,
             height,
         )
@@ -342,14 +352,13 @@ async fn start_session(
         }
 
         let _ = peer.close().await;
-    });
+    }));
 
     Ok((session, answer))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
-    peer: Arc<dyn PeerConnection>,
     sender: Arc<dyn RtpSender>,
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
@@ -358,6 +367,7 @@ async fn run_session(
     id: String,
     generation: u64,
     mut connected: watch::Receiver<RTCPeerConnectionState>,
+    mut stopped: watch::Receiver<bool>,
     width: u32,
     height: u32,
 ) -> anyhow::Result<()> {
@@ -369,8 +379,8 @@ async fn run_session(
         if ownership.borrow().as_deref() != Some(id.as_str())
             || *video_changed.borrow() != generation
             || !*ready.borrow()
+            || *stopped.borrow()
         {
-            peer.close().await?;
             return Ok(());
         }
 
@@ -379,13 +389,13 @@ async fn run_session(
         match connection_state {
             RTCPeerConnectionState::Connected => break,
             RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
-                peer.close().await?;
                 return Ok(());
             }
             _ => {}
         }
 
         tokio::select! {
+            _ = stopped.changed() => return Ok(()),
             result = connected.changed() => { result?; }
             result = ownership.changed() => { result?; }
             result = video_changed.changed() => { result?; }
@@ -404,9 +414,11 @@ async fn run_session(
     let (stop_tx, stop_rx) = watch::channel(false);
     let mut video_task = tokio::spawn(video::stream(
         state.frames.clone(),
-        track,
-        ssrc,
-        payload_type,
+        video::Output::WebRtc {
+            track,
+            ssrc,
+            payload_type,
+        },
         width,
         height,
         target_bitrate,
@@ -415,6 +427,7 @@ async fn run_session(
 
     loop {
         tokio::select! {
+            _ = stopped.changed() => break,
             result = &mut video_task => {
                 result??;
                 break;
@@ -440,6 +453,5 @@ async fn run_session(
         let _ = video_task.await;
     }
 
-    peer.close().await?;
     Ok(())
 }

@@ -68,7 +68,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 /* Only the viewport determines capture limits; video and controls never size the stage. */
 .stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; }
 
-#screen { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; user-select: none; pointer-events: none; }
+#screen, .fallback-screen { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; user-select: none; pointer-events: none; }
 
 #keyboard { position: absolute; width: 2px; height: 20px; padding: 0; border: 0; opacity: .01; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
 
@@ -84,7 +84,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 
 .connection-dot.online { background: var(--online); box-shadow: 0 0 0 3px var(--online-ring); }
 
-.toolbar-panel { position: absolute; top: 0; left: 50%; width: max-content; max-width: calc(100vw - 24px); padding: 16px 18px 10px; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 18px 18px; background: var(--surface); box-shadow: 0 12px 40px var(--shadow); backdrop-filter: blur(20px); transform: translate(-50%, calc(-100% - 12px)); visibility: hidden; transition: transform 180ms ease, visibility 180ms; }
+.toolbar-panel { position: absolute; top: 0; left: 50%; width: max-content; max-width: calc(100vw - 24px); padding: 16px 18px; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 18px 18px; background: var(--surface); box-shadow: 0 12px 40px var(--shadow); backdrop-filter: blur(20px); transform: translate(-50%, calc(-100% - 12px)); visibility: hidden; transition: transform 180ms ease, visibility 180ms; }
 
 .is-open .toolbar-panel { transform: translate(-50%, 0); visibility: visible; pointer-events: auto; }
 
@@ -102,7 +102,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 
 .brand small { display: block; margin-top: 3px; font-size: 10px; color: var(--muted); }
 
-.session-info { display: flex; flex: none; flex-direction: column; align-items: flex-start; gap: 5px; width: 140px; }
+.session-info { display: flex; flex: none; flex-direction: column; align-items: flex-start; gap: 5px; width: 164px; }
 
 .connection-state { display: flex; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; }
 
@@ -143,7 +143,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 540px) {
-    .toolbar-panel { width: calc(100vw - 16px); max-width: none; padding: 14px 12px 10px; }
+    .toolbar-panel { width: calc(100vw - 16px); max-width: none; padding: 14px 12px; }
 
     .toolbar-row { gap: 12px; }
 
@@ -158,7 +158,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
     .session-card { padding: 28px 24px; }
 }
 
-@media (max-width: 360px) {
+@media (max-width: 400px) {
     .toolbar-row { flex-wrap: wrap; }
 
     .brand { flex-basis: calc(100% - 84px); }

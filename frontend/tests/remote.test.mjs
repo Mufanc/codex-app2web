@@ -142,7 +142,7 @@ test('only a changed viewport is reported, after one second of inactivity', t =>
 test('trickle ICE sends the offer immediately and applies candidates after the answer', async t => {
     let peer;
     let finishAnswer;
-    const candidate = { candidate: 'candidate:test', sdpMid: '0', sdpMLineIndex: 0 };
+    const candidate = { candidate: 'candidate:test 1 udp 123 127.0.0.1 9999 typ host', sdpMid: '0', sdpMLineIndex: 0 };
     const applied = [];
 
     class Peer {
