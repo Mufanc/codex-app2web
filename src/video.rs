@@ -31,7 +31,7 @@ pub(crate) struct EncodedSample {
 pub(crate) mod webrtc;
 pub(crate) mod websocket;
 
-pub(super) const INITIAL_BITRATE: u64 = 3_000_000;
+pub(super) const INITIAL_BITRATE: u64 = 4_000_000;
 
 pub(super) struct EncoderSession {
     samples: mpsc::Receiver<EncodedSample>,
