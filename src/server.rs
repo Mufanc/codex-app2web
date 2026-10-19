@@ -10,6 +10,7 @@ use axum::Router;
 use axum_extra::extract::cookie::Key;
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
+use tracing::info;
 
 use crate::cdp::CdpSession;
 use crate::session;
@@ -45,13 +46,13 @@ pub(crate) async fn serve(
     if let Some(path) = unix_socket {
         let listener = tokio::net::UnixListener::bind(&path)?;
 
-        println!("CodexApp2Web: unix:{}", path.display());
+        info!(path = %path.display(), "Listening on Unix socket");
         axum::serve(listener, app).await?;
     } else {
         let address = listen.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8787)));
         let listener = tokio::net::TcpListener::bind(address).await?;
 
-        println!("CodexApp2Web: http://{}", listener.local_addr()?);
+        info!(address = %listener.local_addr()?, "Listening on HTTP");
         axum::serve(listener, app).await?;
     }
 

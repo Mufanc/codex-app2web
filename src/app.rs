@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{bail, ensure, Context};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSString;
+use tracing::info;
 
 mod process;
 
@@ -62,7 +63,7 @@ pub(crate) fn resolve_port(explicit: Option<u16>) -> anyhow::Result<u16> {
         let port = debugging_port(&args).with_context(|| format!("Quit Codex manually, then run:\n{command}"))?;
 
         if let Some(port) = port {
-            eprintln!("Detected Codex CDP port: {port}");
+            info!(cdp_port = port, "Detected Codex CDP port");
             return Ok(port);
         }
 

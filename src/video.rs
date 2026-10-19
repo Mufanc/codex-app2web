@@ -6,6 +6,7 @@ use bytes::Bytes;
 use image::imageops::{self, FilterType};
 use image::{ImageBuffer, Rgb, RgbImage};
 use tokio::sync::{mpsc, watch};
+use tracing::{debug, Instrument, Span};
 use video_toolbox::{
     CodecConfig, EncodeOptions, EncodedFrame, Encoder, EncoderConfig, FrameData, HevcEncoderConfig, HevcProfile,
     PixelFormat,
@@ -48,7 +49,7 @@ impl EncoderSession {
     ) -> Self {
         let (tx, samples) = mpsc::channel(1);
         let (stop, stopped) = watch::channel(false);
-        let task = tokio::spawn(stream(frames, tx, width, height, bitrate, stopped));
+        let task = tokio::spawn(stream(frames, tx, width, height, bitrate, stopped).in_current_span());
 
         Self {
             samples,
@@ -93,7 +94,10 @@ async fn stream(
 ) -> anyhow::Result<()> {
     let (jpeg_tx, jpeg_rx) = mpsc::channel(1);
     let (sample_tx, mut sample_rx) = mpsc::channel::<EncodedSample>(1);
-    let worker = tokio::task::spawn_blocking(move || encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate));
+    let span = Span::current();
+    let worker = tokio::task::spawn_blocking(move || {
+        span.in_scope(|| encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate))
+    });
     let mut ticker = tokio::time::interval(FRAME_INTERVAL);
     let mut frames = frames;
 
@@ -180,6 +184,7 @@ fn encode(
             config.height = height;
             config.average_bitrate = Some(target);
             encoder.reconfigure(config.clone())?;
+            debug!(width, height, bitrate = target, "Encoder reconfigured");
             last_bitrate_change = Instant::now();
             force_key_frame = true;
         }

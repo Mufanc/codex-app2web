@@ -15,6 +15,7 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use tokio::sync::{broadcast, watch};
+use tracing::{error, info, instrument, warn, Instrument};
 use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{
@@ -99,7 +100,7 @@ impl PeerConnectionEventHandler for ConnectionHandler {
                     },
                 });
             }
-            Err(error) => eprintln!("ICE candidate serialization failed: {error}"),
+            Err(error) => warn!(video_id = %self.video_id, %error, "ICE candidate serialization failed"),
         }
     }
 
@@ -116,7 +117,7 @@ impl PeerConnectionEventHandler for ConnectionHandler {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        eprintln!("WebRTC {}: {state:?}", self.video_id);
+        info!(video_id = %self.video_id, ?state, transport = "WebRTC", "Peer connection state changed");
         self.connected.send_replace(state);
     }
 }
@@ -226,6 +227,7 @@ pub(crate) async fn signal(
     }
 }
 
+#[instrument(name = "webrtc_video", skip_all, fields(%video_id, transport = "WebRTC"))]
 async fn start_session(
     frames: watch::Receiver<Option<Frame>>,
     video_id: String,
@@ -324,31 +326,34 @@ async fn start_session(
 
     let video_id = session.id.clone();
 
-    session.task = Some(tokio::spawn(async move {
-        if let Err(error) = run_session(
-            sender,
-            track,
-            ssrc,
-            target_bitrate,
-            frames,
-            connected,
-            stopped,
-            width,
-            height,
-        )
-        .await
-        {
-            eprintln!("WebRTC video: {error:#}");
-            let _ = signals.send(Signal {
-                video_id,
-                message: ServerMessage::VideoError {
-                    code: VideoErrorCode::Encoder,
-                },
-            });
-        }
+    session.task = Some(tokio::spawn(
+        async move {
+            if let Err(error) = run_session(
+                sender,
+                track,
+                ssrc,
+                target_bitrate,
+                frames,
+                connected,
+                stopped,
+                width,
+                height,
+            )
+            .await
+            {
+                error!(error = %format_args!("{error:#}"), "WebRTC encoder task failed");
+                let _ = signals.send(Signal {
+                    video_id,
+                    message: ServerMessage::VideoError {
+                        code: VideoErrorCode::Encoder,
+                    },
+                });
+            }
 
-        let _ = peer.close().await;
-    }));
+            let _ = peer.close().await;
+        }
+        .in_current_span(),
+    ));
 
     cleanup.0 = None;
 

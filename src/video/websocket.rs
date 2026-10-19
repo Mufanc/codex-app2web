@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::sync::watch;
+use tracing::error;
 
 use super::{EncodedSample, EncoderSession, INITIAL_BITRATE, MAX_BITRATE, MIN_BITRATE};
 use crate::cdp::Frame;
@@ -119,7 +120,7 @@ impl WebSocketVideo {
 
     pub(crate) async fn close(self) {
         if let Err(error) = self.encoder.close().await {
-            eprintln!("WebSocket video task: {error:#}");
+            error!(error = %format_args!("{error:#}"), "WebSocket encoder task failed");
         }
     }
 }

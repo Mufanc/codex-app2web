@@ -2,6 +2,7 @@ mod app;
 mod cdp;
 mod cli;
 mod input;
+mod logging;
 mod protocol;
 mod server;
 mod session;
@@ -14,6 +15,9 @@ use crate::cli::Cli;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    logging::init()?;
+
     let port = app::resolve_port(cli.cdp_port)?;
 
     let controller = session::controller::Controller::new();

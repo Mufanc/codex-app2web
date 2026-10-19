@@ -12,6 +12,7 @@ use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
+use tracing::{debug, info, instrument, warn, Instrument};
 
 mod held_input;
 use self::held_input::HeldInput;
@@ -92,6 +93,7 @@ pub(crate) fn connect(cdp_port: u16, ownership: watch::Receiver<Option<u64>>) ->
     }
 }
 
+#[instrument(skip_all, fields(cdp_port = cdp_port))]
 async fn reconnect(
     cdp_port: u16,
     mut commands: mpsc::Receiver<Command>,
@@ -116,10 +118,10 @@ async fn reconnect(
             delay = Duration::from_secs(1);
         }
 
-        eprintln!(
-            "CDP disconnected: {}; retrying in {}s",
-            result.err().map_or_else(|| "session ended".into(), |error| error.to_string()),
-            delay.as_secs()
+        warn!(
+            error = %result.err().map_or_else(|| "session ended".into(), |error| error.to_string()),
+            retry_seconds = delay.as_secs(),
+            "CDP disconnected; retrying"
         );
 
         tokio::time::sleep(delay).await;
@@ -140,14 +142,17 @@ async fn run_connection(
 ) -> anyhow::Result<()> {
     let (mut browser, mut handler) = Browser::connect(format!("http://127.0.0.1:{cdp_port}")).await?;
 
-    let mut handler_task = tokio::spawn(async move {
-        while let Some(event) = handler.next().await {
-            if let Err(error) = event {
-                eprintln!("CDP handler error: {error}");
-                break;
+    let mut handler_task = tokio::spawn(
+        async move {
+            while let Some(event) = handler.next().await {
+                if let Err(error) = event {
+                    warn!(%error, "CDP handler failed");
+                    break;
+                }
             }
         }
-    });
+        .in_current_span(),
+    );
 
     let result = tokio::select! {
         result = async {
@@ -210,7 +215,7 @@ async fn run_cdp(
 
     held.release(&page).await?;
     ready.send_replace(true);
-    eprintln!("CDP connected: Codex page ready");
+    info!("CDP connected; Codex page ready");
 
     let mut capture_size = None;
     let mut viewport_size = None;
@@ -291,9 +296,9 @@ async fn run_cdp(
                 if Some(command.owner) != owner { pending_command = Some(command); continue; }
 
                 match command.input {
-                    CdpInput::Mouse(params) => { held.mouse(&params); if let Err(error) = page.execute(params).await { eprintln!("Mouse input failed: {error}"); } }
-                    CdpInput::Key(params) => { held.key(&params); if let Err(error) = page.execute(params).await { eprintln!("Key input failed: {error}"); } }
-                    CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { eprintln!("Text input failed: {error}"); } }
+                    CdpInput::Mouse(params) => { held.mouse(&params); if let Err(error) = page.execute(params).await { warn!(%error, "Mouse input failed"); } }
+                    CdpInput::Key(params) => { held.key(&params); if let Err(error) = page.execute(params).await { warn!(%error, "Key input failed"); } }
+                    CdpInput::Text(params) => { if let Err(error) = page.execute(params).await { warn!(%error, "Text input failed"); } }
                     CdpInput::Resize(width, height) => {
                         if viewport_size.is_none() { evaluate_script(&page, CURSOR_SCRIPT).await?; }
                         viewport_size = Some((width, height));
@@ -369,6 +374,7 @@ async fn configure_capture(
     }
 
     frames.send_replace(None);
+    debug!(width = desired.0, height = desired.1, "Configuring CDP capture");
     start_screencast(page, desired.0, desired.1).await?;
     *capture_size = Some(desired);
 

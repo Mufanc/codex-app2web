@@ -4,6 +4,7 @@ use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use bytes::Bytes;
 use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc, watch};
+use tracing::{error, info, instrument, warn, Instrument, Span};
 
 use crate::cdp::{CdpSession, Command};
 use crate::input;
@@ -43,6 +44,7 @@ impl Video {
     }
 }
 
+#[instrument(name = "control_session", skip_all, fields(session_id = tracing::field::Empty, takeover = takeover))]
 pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: Controller, takeover: bool) {
     let mut ready = cdp.ready.clone();
     let mut ownership = controller.subscribe();
@@ -60,12 +62,16 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
         let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(close(rejection.unwrap_or("occupied")))).await;
         return;
     };
+
+    Span::current().record("session_id", id);
+    info!("Control acquired");
+
     let lease = ControlLease { controller, id };
     let (sink, mut source) = socket.split();
     let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
     let (video_tx, video_rx) = mpsc::channel(1);
     let (stop, stopped) = watch::channel(None);
-    let mut writer = tokio::spawn(write_socket(sink, control_rx, video_rx, stopped));
+    let mut writer = tokio::spawn(write_socket(sink, control_rx, video_rx, stopped).in_current_span());
     let (signals_tx, mut signals_rx) = broadcast::channel(SIGNAL_QUEUE_CAPACITY);
     let mut video = None::<Video>;
     let mut frames = cdp.frames.clone();
@@ -132,7 +138,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                     }
                 } => {
                     if let Err(error) = packet {
-                        eprintln!("WebSocket video: {error:#}");
+                        error!(error = %format_args!("{error:#}"), transport = "WebSocket", "Video transport failed");
                         send(&control_tx, ServerMessage::VideoError { code: VideoErrorCode::Transport })?;
 
                         if let Some(current) = video.take() { current.close().await; }
@@ -156,7 +162,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                                     if !matches!(video, Some(Video::WebSocket(_))) {
                                         if let Some(current) = video.take() { current.close().await; }
                                         video = Some(Video::WebSocket(WebSocketVideo::start(cdp.frames.clone())));
-                                        eprintln!("Video transport: WebSocket");
+                                        info!(transport = "WebSocket", "Video transport selected");
                                     }
                                 }
                                 ClientMessage::Video(message) => {
@@ -174,7 +180,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                                         Ok(Some(answer)) => send(&control_tx, answer)?,
                                         Ok(None) => {},
                                         Err(error) => {
-                                            eprintln!("WebRTC signaling: {error:#}");
+                                            warn!(error = %format_args!("{error:#}"), "WebRTC signaling failed");
                                             send(&control_tx, ServerMessage::VideoError { code: VideoErrorCode::Signaling })?;
                                         }
                                     }
@@ -192,13 +198,13 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
 
     let reason = tokio::select! {
         result = run => {
-            if let Err(error) = result { eprintln!("Control session: {error:#}"); }
+            if let Err(error) = result { warn!(error = %format_args!("{error:#}"), "Control session failed"); }
             "session ended"
         }
         _ = ownership.wait_for(|current| *current != Some(id)) => "taken over",
         _ = ready.wait_for(|ready| !*ready) => "cdp disconnected",
         result = &mut writer => {
-            if let Ok(Err(error)) = result { eprintln!("WebSocket writer: {error:#}"); }
+            if let Ok(Err(error)) = result { warn!(error = %format_args!("{error:#}"), "WebSocket writer failed"); }
             "writer stopped"
         }
     };
@@ -215,7 +221,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
         let _ = writer.await;
     }
 
-    eprintln!("Control session {id}: {reason}");
+    info!(reason, "Control released");
 }
 
 fn close(reason: &'static str) -> Message {
