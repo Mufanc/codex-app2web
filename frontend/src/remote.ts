@@ -353,8 +353,22 @@ export function startRemote(
 
             onState(occupied ? 'occupied' : 'disconnected');
 
-            if (!occupied) reconnectTimer = setTimeout(() => connect(), 1000);
+            if (!occupied) reconnectTimer = setTimeout(refreshSession, 1000);
         };
+    }
+
+    async function refreshSession() {
+        if (disposed) return;
+
+        try {
+            // Reload the session cookie after a server restart without reloading the video UI.
+            const response = await fetch('/', { credentials: 'same-origin', cache: 'no-store' });
+
+            if (!response.ok) throw new Error('Session refresh failed');
+            if (!disposed) connect();
+        } catch {
+            if (!disposed) reconnectTimer = setTimeout(refreshSession, 1000);
+        }
     }
 
     connect();

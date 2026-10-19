@@ -93,6 +93,7 @@ impl PeerConnectionEventHandler for ConnectionHandler {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        eprintln!("WebRTC {}: {state:?}", self.video_id);
         self.connected.send_replace(state);
     }
 }

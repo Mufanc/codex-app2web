@@ -177,6 +177,7 @@ async fn run_cdp(
     let mut events = page.event_listener::<EventScreencastFrame>().await?;
 
     ready.send_replace(true);
+    eprintln!("CDP connected: Codex page ready");
 
     let mut capture_size = None;
     let mut viewport_size = None;
@@ -189,7 +190,12 @@ async fn run_cdp(
             _ = ticker.tick() => {
                 let command = EvaluateParams::builder().expression(CURSOR_SCRIPT).return_by_value(true).build().map_err(anyhow::Error::msg)?;
                 let point = page.execute(command).await.ok().and_then(|response| response.result.result.value).unwrap_or(Value::Null);
-                cursor.send_replace(if point.is_object() { Some(point) } else { None });
+                let point = if point.is_object() { Some(point) } else { None };
+                cursor.send_if_modified(|current| {
+                    if *current == point { return false; }
+                    *current = point;
+                    true
+                });
             }
             _ = async {
                 if let Some(changed_at) = window_changed_at {

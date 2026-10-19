@@ -10,6 +10,7 @@ use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use axum_extra::extract::cookie::Key;
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,6 +20,8 @@ use crate::cdp::{CdpInput, CdpSession, Frame};
 use crate::input::{input_command, Input};
 use crate::webrtc_video;
 use crate::webrtc_video::VideoSignal;
+
+mod session_cookie;
 
 const SIGNAL_QUEUE_CAPACITY: usize = 128;
 const MAX_CLIENT_MESSAGE_BYTES: usize = 132 * 1024;
@@ -34,6 +37,7 @@ static FRONTEND: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    cookie_key: Key,
     pub(crate) frames: watch::Receiver<Option<Frame>>,
     pub(crate) cursor: watch::Receiver<Option<Value>>,
     pub(crate) commands: mpsc::Sender<CdpInput>,
@@ -64,6 +68,7 @@ pub(crate) async fn serve(
     let (controller_changed, _) = watch::channel(None);
     let (video_changed, _) = watch::channel(0);
     let state = AppState {
+        cookie_key: Key::generate(),
         frames,
         cursor,
         commands,
@@ -73,7 +78,7 @@ pub(crate) async fn serve(
         video_changed,
     };
     let app = Router::new()
-        .route("/", get(asset))
+        .route("/", get(index))
         .route("/assets/{*path}", get(asset))
         .route("/ws", get(ws))
         .with_state(state);
@@ -107,13 +112,23 @@ async fn asset(uri: Uri) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, content_type)], file.contents()).into_response()
 }
 
+async fn index(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let jar = session_cookie::issue(&headers, state.cookie_key);
+
+    (
+        jar,
+        [(header::CACHE_CONTROL, "no-store")],
+        asset(Uri::from_static("/")).await,
+    )
+}
+
 async fn ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Query(session): Query<Session>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !same_origin(&headers) {
+    if !same_origin(&headers) || !session_cookie::valid(&headers, state.cookie_key.clone()) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -193,10 +208,20 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
     let mut frames = state.frames.clone();
     let mut cursor = state.cursor.clone();
     let initial_frame = { frames.borrow_and_update().clone() };
+    let mut last_size = initial_frame
+        .as_ref()
+        .map(|frame| (frame.width, frame.height));
 
     if let Some(frame) = initial_frame {
         let _ = send_size(&mut socket, frame).await;
     }
+
+    let point = cursor.borrow_and_update().clone();
+    let _ = socket
+        .send(BrowserMessage::Text(
+            json!({"type":"cursor","point":point}).to_string().into(),
+        ))
+        .await;
 
     loop {
         tokio::select! {
@@ -225,7 +250,11 @@ async fn viewer(mut socket: WebSocket, state: AppState, id: String, takeover: bo
                 if result.is_err() { break; }
                 let frame = frames.borrow_and_update().clone();
                 if let Some(frame) = frame {
-                    if send_size(&mut socket, frame).await.is_err() { break; }
+                    let size = (frame.width, frame.height);
+                    if last_size != Some(size) {
+                        if send_size(&mut socket, frame).await.is_err() { break; }
+                        last_size = Some(size);
+                    }
                 }
             }
             result = cursor.changed() => {

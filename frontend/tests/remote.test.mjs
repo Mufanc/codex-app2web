@@ -69,7 +69,9 @@ function setup(t, viewport, source, decoded = source, Peer) {
     screen.dispatchEvent(new Event('resize'));
 
     return {
-        stage, screen, keyboard, socket, size,
+        stage, screen, keyboard, size, dispose: remote.dispose,
+
+        get socket() { return socket; },
 
         resize(width, height) {
             stage.clientWidth = width;
@@ -199,4 +201,31 @@ test('trickle ICE sends the offer immediately and applies candidates after the a
     await flush();
     assert.equal(peer.closed, true);
     assert.deepEqual(applied, ['answer', candidate, null]);
+});
+
+test('reconnect refreshes the session cookie and retries failed refreshes', async t => {
+    const remote = setup(t, [800, 600], [960, 540]);
+    const originalSocket = remote.socket;
+    const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: false }));
+
+    originalSocket.onclose({ reason: '' });
+    t.mock.timers.tick(1000);
+    await new Promise(setImmediate);
+    assert.equal(remote.socket, originalSocket);
+
+    fetch.mock.mockImplementation(async () => ({ ok: true }));
+    t.mock.timers.tick(1000);
+    await new Promise(setImmediate);
+    assert.notEqual(remote.socket, originalSocket);
+    assert.deepEqual(fetch.mock.calls[1].arguments, ['/', { credentials: 'same-origin', cache: 'no-store' }]);
+
+    const socket = remote.socket;
+    let finish;
+    fetch.mock.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    socket.onclose({ reason: '' });
+    t.mock.timers.tick(1000);
+    remote.dispose();
+    finish({ ok: true });
+    await new Promise(setImmediate);
+    assert.equal(remote.socket, socket);
 });
