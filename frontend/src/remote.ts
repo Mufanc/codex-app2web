@@ -1,13 +1,13 @@
 import { t } from './i18n.ts';
-import { createWebSocketVideo } from './websocket-video.ts';
-import { createInput } from './input.ts';
+import { createVncVideo } from './vnc-video.ts';
 import { startWebRtc } from './webrtc-video.ts';
+import { createInput } from './input.ts';
 import {
     MAX_VIDEO_WIDTH,
     MAX_VIDEO_HEIGHT,
     type ClientMessage,
     type ServerMessage,
-    type VideoSignal,
+    type WebRtcSignal,
     type NativeMenu,
 } from './protocol.ts';
 
@@ -18,7 +18,7 @@ const FALLBACK_TIMEOUT_MS = 15_000;
 
 export function startRemote(
     stage: HTMLElement,
-    screen: HTMLVideoElement,
+    screen: HTMLElement,
     keyboard: HTMLTextAreaElement,
     onState: (state: ConnectionState, detail?: string) => void,
     onSize: (width: number, height: number) => void,
@@ -34,18 +34,13 @@ export function startRemote(
     let decodedSize: [number, number] | null = null;
     let socket: WebSocket | undefined;
     let videoAbort: AbortController | undefined;
+    let receiveWebRtcSignal: ((message: WebRtcSignal) => void) | undefined;
+    let transport: VideoTransport | undefined;
     let receiveVideoFrame: ((data: ArrayBuffer) => void) | undefined;
-    let receiveVideoSignal: ((message: VideoSignal) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
     let generation = 0;
-
-    function onScreenResize() {
-        decodedSize = screen.videoWidth && screen.videoHeight ? [screen.videoWidth, screen.videoHeight] : null;
-    }
-
-    screen.addEventListener('resize', onScreenResize);
 
     const input = createInput(stage, keyboard, () => ({ sourceWidth, sourceHeight, decodedSize }), send);
 
@@ -84,22 +79,46 @@ export function startRemote(
 
     resizeObserver.observe(stage);
 
-    function startFallback() {
+    function startVideo(fallback = false) {
+        if (!fallback && videoStarted && !videoAbort?.signal.aborted) return;
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
         videoAbort?.abort();
         videoAbort = new AbortController();
         videoStarted = true;
+        transport = !fallback && typeof RTCPeerConnection !== 'undefined' ? 'WebRTC' : 'WebSocket';
+        onTransport(transport);
+        onState('connecting', t(transport === 'WebRTC' ? 'connection.webrtcConnecting' : 'connection.vncConnecting'));
 
         const signal = videoAbort.signal;
+        const timeout = setTimeout(fail, FALLBACK_TIMEOUT_MS);
 
-        onTransport('WebSocket');
-        onState('connecting', t('connection.switching'));
-
-        const timeout = setTimeout(() => fail(t('connection.websocketTimeout')), FALLBACK_TIMEOUT_MS);
-
-        function fail(message: string) {
+        function fail() {
             if (signal.aborted) return;
+
+            if (transport === 'WebRTC') {
+                startVideo(true);
+                return;
+            }
+
             videoAbort?.abort();
-            onState('error', message);
+            onState('error', t('connection.vncFailed'));
+        }
+
+        function display(sendData: (data: ArrayBufferView<ArrayBuffer>) => void) {
+            if (signal.aborted) return;
+
+            receiveVideoFrame = createVncVideo(
+                screen,
+                sendData,
+                signal,
+                (width, height) => {
+                    clearTimeout(timeout);
+                    decodedSize = [width, height];
+                    onState('streaming');
+                },
+                fail,
+            );
         }
 
         signal.addEventListener(
@@ -107,80 +126,23 @@ export function startRemote(
             () => {
                 clearTimeout(timeout);
                 receiveVideoFrame = undefined;
+                receiveWebRtcSignal = undefined;
                 decodedSize = null;
             },
             { once: true },
         );
 
         try {
-            receiveVideoFrame = createWebSocketVideo(
-                screen,
-                signal,
-                (width, height) => {
-                    clearTimeout(timeout);
-                    decodedSize = [width, height];
-                    onState('streaming');
-                },
-                (sequence) => send({ type: 'video_ack', sequence }),
-                fail,
-            );
-
-            send({ type: 'fallback' });
-        } catch (error) {
-            fail(String(error));
-        }
-    }
-
-    function startVideo() {
-        if (videoStarted && !videoAbort?.signal.aborted) return;
-
-        videoAbort?.abort();
-        videoAbort = new AbortController();
-
-        const signal = videoAbort.signal;
-        const hevc = window.RTCPeerConnection
-            ? RTCRtpReceiver.getCapabilities('video')?.codecs.filter(
-                  (codec) => codec.mimeType.toLowerCase() === 'video/h265',
-              )
-            : undefined;
-
-        if (!hevc?.length) {
-            startFallback();
-
-            return;
-        }
-
-        onTransport('WebRTC');
-        onState('connecting', t('connection.webrtcConnecting'));
-        videoStarted = true;
-
-        signal.addEventListener(
-            'abort',
-            () => {
-                receiveVideoSignal = undefined;
-                decodedSize = null;
-            },
-            { once: true },
-        );
-
-        try {
-            receiveVideoSignal = startWebRtc(
-                screen,
-                signal,
-                hevc,
-                send,
-                () => {
-                    onScreenResize();
-                    onState('streaming');
-                },
-                (message) => {
-                    console.info(t('connection.fallbackLog', { error: message }));
-                    startFallback();
-                },
-            );
-        } catch (error) {
-            console.info(error);
-            startFallback();
+            if (transport === 'WebRTC') {
+                receiveWebRtcSignal = startWebRtc(signal, send, display, (data) => receiveVideoFrame?.(data), fail);
+            } else {
+                display((data) => {
+                    if (socket?.readyState === WebSocket.OPEN) socket.send(data);
+                });
+                send({ type: 'request_fallback' });
+            }
+        } catch {
+            fail();
         }
     }
 
@@ -219,7 +181,7 @@ export function startRemote(
             if (disposed || socket !== current) return;
 
             if (event.data instanceof ArrayBuffer) {
-                receiveVideoFrame?.(event.data);
+                if (transport === 'WebSocket') receiveVideoFrame?.(event.data);
                 return;
             }
 
@@ -264,17 +226,16 @@ export function startRemote(
                 );
             }
 
-            if (message.type === 'answer' || message.type === 'ice') receiveVideoSignal?.(message);
+            if (message.type === 'answer' || message.type === 'ice') receiveWebRtcSignal?.(message);
 
             if (message.type === 'video_error') {
-                if (!receiveVideoFrame) {
-                    startFallback();
-                    return;
+                if (transport === 'WebRTC') {
+                    startVideo(true);
+                } else {
+                    videoAbort?.abort();
+                    videoStarted = false;
+                    onState('error', t(`errors.${message.code}`));
                 }
-
-                videoAbort?.abort();
-                videoStarted = false;
-                onState('error', t(`errors.${message.code}`));
             }
         };
 
@@ -326,7 +287,6 @@ export function startRemote(
             clearTimeout(resizeTimer);
             clearTimeout(reconnectTimer);
             resizeObserver.disconnect();
-            screen.removeEventListener('resize', onScreenResize);
             videoAbort?.abort();
             socket?.close();
         },

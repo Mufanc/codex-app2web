@@ -5,32 +5,25 @@ use webrtc::peer_connection::{RTCIceCandidateInit, RTCSessionDescription};
 use crate::input::Input;
 
 #[derive(Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ClientMessage {
-    Fallback(FallbackCommand),
-    Video(VideoSignal),
+    RequestFallback,
+    #[serde(untagged)]
+    WebRtc(WebRtcSignal),
+    #[serde(untagged)]
     Input(Input),
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum FallbackCommand {
-    Fallback,
-    VideoAck { sequence: u32 },
-}
-
-#[derive(Deserialize)]
-pub(crate) struct VideoOffer {
+pub(crate) struct WebRtcOffer {
     pub(crate) video_id: String,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
     pub(crate) sdp: String,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum VideoSignal {
-    Offer(VideoOffer),
+pub(crate) enum WebRtcSignal {
+    Offer(WebRtcOffer),
     Ice {
         video_id: String,
         candidate: Option<RTCIceCandidateInit>,
@@ -71,8 +64,6 @@ pub(crate) enum ServerMessage {
 pub(crate) enum VideoErrorCode {
     #[serde(rename = "signaling_failed")]
     Signaling,
-    #[serde(rename = "encoder_failed")]
-    Encoder,
     #[serde(rename = "transport_failed")]
     Transport,
 }
@@ -83,12 +74,17 @@ mod tests {
     use serde_json::json;
     #[test]
     fn websocket_accepts_trickle_signals_and_existing_input() {
+        assert!(matches!(
+            serde_json::from_value::<ClientMessage>(json!({ "type": "request_fallback" })).unwrap(),
+            ClientMessage::RequestFallback
+        ));
+        assert!(serde_json::from_value::<ClientMessage>(json!({ "type": "unknown" })).is_err());
         let offer = json!({
-            "type": "offer", "video_id": "test", "width": 1920, "height": 1080, "sdp": "offer",
+            "type": "offer", "video_id": "test", "sdp": "offer",
         });
         assert!(matches!(
             serde_json::from_value::<ClientMessage>(offer).unwrap(),
-            ClientMessage::Video(VideoSignal::Offer(_))
+            ClientMessage::WebRtc(WebRtcSignal::Offer(_))
         ));
 
         let candidate = json!({
@@ -97,7 +93,7 @@ mod tests {
                 "usernameFragment": "test",
             },
         });
-        let ClientMessage::Video(VideoSignal::Ice {
+        let ClientMessage::WebRtc(WebRtcSignal::Ice {
             candidate: Some(candidate),
             ..
         }) = serde_json::from_value::<ClientMessage>(candidate).unwrap()
@@ -112,7 +108,7 @@ mod tests {
                 "type": "ice", "video_id": "test", "candidate": null,
             }))
             .unwrap(),
-            ClientMessage::Video(VideoSignal::Ice { candidate: None, .. })
+            ClientMessage::WebRtc(WebRtcSignal::Ice { candidate: None, .. })
         ));
         assert!(matches!(
             serde_json::from_value::<ClientMessage>(json!({

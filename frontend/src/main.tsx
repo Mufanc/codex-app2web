@@ -15,7 +15,7 @@ function App() {
     const { t } = useTranslation();
 
     const stageRef = useRef<HTMLDivElement>(null);
-    const screenRef = useRef<HTMLVideoElement>(null);
+    const screenRef = useRef<HTMLDivElement>(null);
     const keyboardRef = useRef<HTMLTextAreaElement>(null);
     const remoteRef = useRef<ReturnType<typeof startRemote> | null>(null);
 
@@ -52,7 +52,7 @@ function App() {
     return (
         <main className="remote-desktop" aria-label={t('accessibility.desktop')}>
             <div className="stage" ref={stageRef} inert={status !== 'streaming'}>
-                <video id="screen" ref={screenRef} aria-label={t('accessibility.screen')} autoPlay muted playsInline />
+                <div id="screen" ref={screenRef} aria-label={t('accessibility.screen')} />
                 <textarea
                     id="keyboard"
                     ref={keyboardRef}

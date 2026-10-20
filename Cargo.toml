@@ -20,16 +20,13 @@ mime_guess = "2.0"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSEnumerator", "NSString", "NSURL"] }
 rand = "0.10"
-rtc = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-video_toolbox = { package = "shiguredo_video_toolbox", version = "2026.1" }
 webrtc = "0.21"
-yuv = "0.8"
 
 [profile.dev.package.codex-app2web]
 opt-level = 3
@@ -37,10 +34,11 @@ opt-level = 3
 [profile.dev.package.image]
 opt-level = 3
 
-[profile.dev.package.yuv]
-opt-level = 3
-
 [profile.release]
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"
