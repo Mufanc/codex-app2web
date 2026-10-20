@@ -3,8 +3,8 @@ use std::time::Duration;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
-use image::codecs::jpeg::JpegEncoder;
-use image::{Rgb, RgbImage};
+use image::codecs::png::PngEncoder;
+use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage};
 use tokio::sync::{mpsc, watch};
 
 use crate::cdp::{CdpInput, CdpSession, Command, Frame};
@@ -12,10 +12,13 @@ use crate::session::controller::Controller;
 
 fn frame(width: u32, height: u32, color: u8) -> Frame {
     let image = RgbImage::from_pixel(width, height, Rgb([color, 80, 160]));
-    let mut jpeg = Vec::new();
-    JpegEncoder::new(&mut jpeg).encode_image(&image).unwrap();
+    let mut image_bytes = Vec::new();
+    PngEncoder::new(&mut image_bytes)
+        .write_image(image.as_raw(), width, height, ExtendedColorType::Rgb8)
+        .unwrap();
+
     Frame {
-        jpeg: jpeg.into(),
+        image: image_bytes.into(),
         width: width as f64,
         height: height as f64,
     }

@@ -92,11 +92,11 @@ async fn stream(
     target_bitrate: Arc<AtomicU64>,
     stop: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let (jpeg_tx, jpeg_rx) = mpsc::channel(1);
+    let (image_tx, image_rx) = mpsc::channel(1);
     let (sample_tx, mut sample_rx) = mpsc::channel::<EncodedSample>(1);
     let span = Span::current();
     let worker = tokio::task::spawn_blocking(move || {
-        span.in_scope(|| encode(jpeg_rx, sample_tx, max_width, max_height, target_bitrate))
+        span.in_scope(|| encode(image_rx, sample_tx, max_width, max_height, target_bitrate))
     });
     let mut ticker = tokio::time::interval(FRAME_INTERVAL);
     let mut frames = frames;
@@ -113,7 +113,7 @@ async fn stream(
                     if frames.has_changed().unwrap_or(false) {
                         let frame = frames.borrow_and_update().clone();
                         if let Some(frame) = frame {
-                            if jpeg_tx.try_send(frame.jpeg).is_err() {
+                            if image_tx.try_send(frame.image).is_err() {
                                 frames.mark_changed();
                             }
                         }
@@ -134,7 +134,7 @@ async fn stream(
     }
     .await;
 
-    drop(jpeg_tx);
+    drop(image_tx);
     drop(sample_rx);
     worker.await??;
 
@@ -142,7 +142,7 @@ async fn stream(
 }
 
 fn encode(
-    mut jpeg_rx: mpsc::Receiver<Bytes>,
+    mut image_rx: mpsc::Receiver<Bytes>,
     sample_tx: mpsc::Sender<EncodedSample>,
     max_width: u32,
     max_height: u32,
@@ -152,8 +152,8 @@ fn encode(
     let mut last_bitrate_change = Instant::now();
     let mut previous_frame = None;
 
-    while let Some(jpeg) = jpeg_rx.blocking_recv() {
-        let Ok(image) = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg) else {
+    while let Some(image_bytes) = image_rx.blocking_recv() {
+        let Ok(image) = image::load_from_memory_with_format(&image_bytes, image::ImageFormat::Png) else {
             continue;
         };
 

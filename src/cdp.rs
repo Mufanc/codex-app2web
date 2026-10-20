@@ -35,7 +35,7 @@ const MENU_BINDING: &str = "__codexApp2WebMenuChanged";
 
 #[derive(Clone)]
 pub(crate) struct Frame {
-    pub(crate) jpeg: Bytes,
+    pub(crate) image: Bytes,
     pub(crate) width: f64,
     pub(crate) height: f64,
 }
@@ -372,7 +372,7 @@ async fn run_cdp(
             event = events.next() => {
                 let Some(event) = event else { break; };
                 let encoded: &str = event.data.as_ref();
-                let jpeg = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)?;
+                let image = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)?;
                 let width = event.metadata.device_width;
                 let height = event.metadata.device_height;
 
@@ -384,8 +384,8 @@ async fn run_cdp(
                         window_changed_at = Some(Instant::now());
                     }
 
-                    if owner.is_some() && frames.borrow().as_ref().is_none_or(|old| old.jpeg.as_ref() != jpeg || old.width != width || old.height != height) {
-                        frames.send_replace(Some(Frame { jpeg: jpeg.into(), width, height }));
+                    if owner.is_some() && frames.borrow().as_ref().is_none_or(|old| old.image.as_ref() != image || old.width != width || old.height != height) {
+                        frames.send_replace(Some(Frame { image: image.into(), width, height }));
                     }
                 }
 
@@ -446,8 +446,7 @@ async fn configure_capture(
 async fn start_screencast(page: &Page, width: u32, height: u32) -> anyhow::Result<()> {
     page.execute(
         StartScreencastParams::builder()
-            .format(StartScreencastFormat::Jpeg)
-            .quality(100)
+            .format(StartScreencastFormat::Png)
             .max_width(width as i64)
             .max_height(height as i64)
             .every_nth_frame(1)
