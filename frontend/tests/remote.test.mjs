@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 
-import { startRemote } from '../src/remote.ts';
+mock.module('../src/vnc-video.ts', {
+    namedExports: {
+        createVncVideo: (screen, socket, signal, onFrame) => {
+            const resized = () => onFrame(screen.videoWidth, screen.videoHeight);
+            screen.addEventListener('resize', resized);
+            signal.addEventListener('abort', () => screen.removeEventListener('resize', resized));
+            return () => {};
+        },
+    },
+});
+
+const { startRemote } = await import('../src/remote.ts');
 
 function setup(t, viewport, source, decoded = source, Peer) {
     t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -15,6 +26,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
 
     let socket;
     let resized;
+    const transports = [];
 
     class Socket {
         static OPEN = 1;
@@ -72,6 +84,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
         keyboard,
         () => {},
         () => {},
+        (transport) => transports.push(transport),
     );
 
     t.after(() => {
@@ -94,6 +107,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
         stage,
         screen,
         keyboard,
+        transports,
         size,
         dispose: remote.dispose,
         claim: remote.claim,
@@ -174,83 +188,19 @@ test('only a changed viewport is reported, after one second of inactivity', (t) 
     assert.equal(reports().length, 2);
 });
 
-test('trickle ICE sends the offer immediately and applies candidates after the answer', async (t) => {
-    let peer;
-    let finishAnswer;
-    const candidate = { candidate: 'candidate:test 1 udp 123 127.0.0.1 9999 typ host', sdpMid: '0', sdpMLineIndex: 0 };
-    const applied = [];
+test('VNC starts once and viewport changes do not recreate the transport', (t) => {
+    const remote = setup(t, [800, 600], [960, 540]);
+    const starts = () => remote.socket.sent.filter((message) => message.type === 'request_fallback');
 
-    class Peer {
-        iceGatheringState = 'gathering';
-
-        constructor() {
-            peer = this;
-        }
-
-        addTransceiver() {
-            return { setCodecPreferences() {} };
-        }
-
-        async createOffer() {
-            return { type: 'offer', sdp: 'test offer' };
-        }
-
-        async setLocalDescription() {
-            this.onicecandidate({ candidate: { toJSON: () => candidate } });
-            this.onicecandidate({ candidate: null });
-        }
-
-        async setRemoteDescription(description) {
-            await new Promise((resolve) => {
-                finishAnswer = resolve;
-            });
-            applied.push(description.type);
-        }
-
-        async addIceCandidate(value) {
-            applied.push(value ?? null);
-        }
-
-        close() {
-            this.closed = true;
-        }
-    }
-
-    const remote = setup(t, [800, 600], [960, 540], [800, 450], Peer);
-    const flush = () => new Promise(setImmediate);
-
-    await flush();
-
-    const messages = remote.socket.sent.filter((message) => message.type !== 'resize');
-    const offer = messages[0];
-
-    assert.equal(peer.iceGatheringState, 'gathering');
-    assert.equal(offer.type, 'offer');
-    assert.deepEqual(
-        messages.map((message) => message.type),
-        ['offer', 'ice', 'ice'],
-    );
-    assert.deepEqual(messages[1].candidate, candidate);
-    assert.equal(messages[2].candidate, null);
-
-    const receive = (message) => remote.socket.onmessage({ data: JSON.stringify(message) });
-
-    receive({ type: 'ice', video_id: 'stale-session', candidate });
-    receive({ type: 'answer', video_id: offer.video_id, description: { type: 'answer', sdp: 'test answer' } });
-    receive({ type: 'ice', video_id: offer.video_id, candidate });
-    receive({ type: 'ice', video_id: offer.video_id, candidate: null });
-    await flush();
-    assert.deepEqual(applied, []);
-
-    finishAnswer();
-    await flush();
-    assert.deepEqual(applied, ['answer', candidate, null]);
-
-    remote.socket.onclose({ reason: 'taken over' });
-    receive({ type: 'ice', video_id: offer.video_id, candidate });
-    await flush();
-    assert.equal(peer.closed, true);
-    assert.deepEqual(applied, ['answer', candidate, null]);
+    assert.equal(starts().length, 1);
+    remote.resize(600, 400);
+    t.mock.timers.tick(1000);
+    assert.equal(starts().length, 1);
+    assert.deepEqual(remote.socket.sent.filter((message) => message.type === 'resize').at(-1), {
+        type: 'resize',
+        width: 600,
+        height: 400,
+    });
 });
 
 test('reconnect refreshes the session cookie and retries failed refreshes', async (t) => {
@@ -346,3 +296,50 @@ test('losing focus releases input and cancels unfinished composition', (t) => {
     remote.stage.dispatchEvent(new Event('pointercancel'));
     assert.equal(remote.socket.sent.at(-1).type, 'reset');
 });
+
+for (const failure of ['timeout', 'closed']) {
+    test(`WebRTC ${failure} switches once to a fresh WebSocket RFB session`, async (t) => {
+        let peer;
+        class Peer {
+            constructor() {
+                peer = this;
+            }
+            createDataChannel() {
+                this.channel = {
+                    close() {
+                        this.onclose?.();
+                    },
+                    readyState: 'open',
+                    bufferedAmount: 0,
+                    send() {},
+                };
+                return this.channel;
+            }
+            async createOffer() {
+                return { type: 'offer', sdp: 'data channel offer' };
+            }
+            async setLocalDescription() {}
+            close() {
+                this.closed = true;
+            }
+        }
+        const remote = setup(t, [800, 600], [960, 540], [800, 450], Peer);
+        await new Promise(setImmediate);
+        assert.equal(
+            remote.socket.sent.some((message) => message.type === 'request_fallback'),
+            false,
+        );
+        if (failure === 'timeout') t.mock.timers.tick(8000);
+        else {
+            peer.channel.onopen();
+            peer.channel.onclose();
+        }
+        assert.deepEqual(remote.transports, [null, 'WebRTC', 'WebSocket']);
+        assert.equal(peer.closed, true);
+        assert.equal(remote.socket.sent.filter((message) => message.type === 'request_fallback').length, 1);
+        peer.channel.onopen();
+        peer.channel.onerror();
+        t.mock.timers.tick(1000);
+        assert.equal(remote.socket.sent.filter((message) => message.type === 'request_fallback').length, 1);
+    });
+}

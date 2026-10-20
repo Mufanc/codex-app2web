@@ -157,8 +157,7 @@ button:focus-visible {
     touch-action: none;
 }
 
-#screen,
-.fallback-screen {
+#screen {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -537,4 +536,13 @@ button:focus-visible {
         transition: none !important;
         animation: none !important;
     }
+}
+
+#screen > div {
+    align-items: center;
+    justify-content: center;
+}
+
+#screen canvas {
+    flex-shrink: 0;
 }

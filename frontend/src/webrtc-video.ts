@@ -1,20 +1,22 @@
 import { t } from './i18n.ts';
-import { MAX_VIDEO_WIDTH, MAX_VIDEO_HEIGHT, type ClientMessage, type VideoSignal } from './protocol.ts';
+import type { ClientMessage, WebRtcSignal } from './protocol.ts';
 import stunServers from '../../shared/stun-servers.json' with { type: 'json' };
 
 const VIDEO_CONNECT_TIMEOUT_MS = 8_000;
+const DATA_CHANNEL_CHUNK = 16 * 1024;
+const MAX_BUFFERED_BYTES = 256 * 1024;
 
 export function startWebRtc(
-    screen: HTMLVideoElement,
     signal: AbortSignal,
-    codecs: RTCRtpCodec[],
     send: (message: ClientMessage) => void,
-    onFrame: () => void,
+    onOpen: (sendData: (data: ArrayBufferView<ArrayBuffer>) => void) => void,
+    onData: (data: ArrayBuffer) => void,
     onFailure: (message: string) => void,
 ) {
     const peer = new RTCPeerConnection({
         iceServers: [{ urls: stunServers }],
     });
+    const channel = peer.createDataChannel('rfb', { ordered: true });
     const videoId = crypto.randomUUID();
     const pendingCandidates: (RTCIceCandidateInit | null)[] = [];
     let offerSent = false;
@@ -31,7 +33,7 @@ export function startWebRtc(
         () => {
             clearTimeout(timeout);
             peer.close();
-            screen.srcObject = null;
+            channel.close();
         },
         { once: true },
     );
@@ -52,7 +54,7 @@ export function startWebRtc(
         else pendingCandidates.push(candidate);
     };
 
-    const receive = (message: VideoSignal) => {
+    const receive = (message: WebRtcSignal) => {
         if (signal.aborted || message.video_id !== videoId) return;
 
         // Candidates must wait for the preceding answer to finish being applied.
@@ -66,24 +68,38 @@ export function startWebRtc(
             .catch((error) => fail(t('connection.signalingError', { error: String(error) })));
     };
 
-    const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
+    channel.binaryType = 'arraybuffer';
 
-    transceiver.setCodecPreferences(codecs);
+    channel.onopen = () => {
+        if (signal.aborted) return;
+        clearTimeout(timeout);
 
-    peer.ontrack = (event) => {
-        screen.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+        onOpen((data) => {
+            if (signal.aborted) return;
 
-        screen.requestVideoFrameCallback(() => {
-            if (!signal.aborted) {
-                clearTimeout(timeout);
-                onFrame();
+            if (channel.readyState !== 'open' || channel.bufferedAmount > MAX_BUFFERED_BYTES) {
+                fail(t('connection.webrtcFailed'));
+                return;
+            }
+
+            const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+
+            try {
+                for (let offset = 0; offset < bytes.length; offset += DATA_CHANNEL_CHUNK) {
+                    channel.send(bytes.subarray(offset, offset + DATA_CHANNEL_CHUNK));
+                }
+            } catch (error) {
+                fail(t('connection.webrtcError', { error: String(error) }));
             }
         });
-
-        void screen.play().catch((error) => {
-            fail(t('connection.playbackError', { error: String(error) }));
-        });
     };
+
+    channel.onmessage = (event) => {
+        if (!signal.aborted && event.data instanceof ArrayBuffer) onData(event.data);
+    };
+
+    channel.onerror = () => fail(t('connection.webrtcFailed'));
+    channel.onclose = () => fail(t('connection.webrtcFailed'));
 
     peer.onconnectionstatechange = () => {
         if (peer.connectionState === 'failed' && !signal.aborted) {
@@ -102,8 +118,6 @@ export function startWebRtc(
             send({
                 type: 'offer',
                 video_id: videoId,
-                width: MAX_VIDEO_WIDTH,
-                height: MAX_VIDEO_HEIGHT,
                 sdp: offer.sdp ?? '',
             });
             offerSent = true;

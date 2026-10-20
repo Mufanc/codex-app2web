@@ -76,7 +76,7 @@ async fn browser_video_takeover_resize_and_cdp_reconnect() -> anyhow::Result<()>
         let first = browser.new_page("about:blank").await?;
         first.evaluate_on_new_document(include_str!("session.test.js")).await?;
         first.goto(&url).await?;
-        wait(&first, "document.querySelector('.fallback-screen')?.width === 640 && document.querySelector('.connection-state')?.textContent.includes('WebSocket') && !document.querySelector('.session-overlay')").await?;
+        wait(&first, "document.querySelector('#screen canvas')?.width === 640 && document.querySelector('.connection-state')?.textContent.includes('WebSocket') && !document.querySelector('.session-overlay')").await?;
         let first_owner = *ownership.borrow();
         anyhow::ensure!(first_owner.is_some(), "Missing controller");
         wait(&first, "document.title === 'Initial task'").await?;
@@ -87,7 +87,7 @@ async fn browser_video_takeover_resize_and_cdp_reconnect() -> anyhow::Result<()>
         wait(&second, "!!document.querySelector('.primary-button')").await?;
         anyhow::ensure!(*ownership.borrow() == first_owner, "Rejected viewer replaced owner");
         second.find_element(".primary-button").await?.click().await?;
-        wait(&second, "document.querySelector('.fallback-screen')?.width === 640 && !document.querySelector('.session-overlay')").await?;
+        wait(&second, "document.querySelector('#screen canvas')?.width === 640 && !document.querySelector('.session-overlay')").await?;
         wait(&first, "!!document.querySelector('.primary-button') && document.title === 'CodexApp2Web'").await?;
         anyhow::ensure!(*ownership.borrow() != first_owner, "Takeover did not change controller");
 
@@ -130,23 +130,82 @@ async fn browser_video_takeover_resize_and_cdp_reconnect() -> anyhow::Result<()>
             frames_tx.send_replace(Some(frame(640, 360, color)));
             tokio::time::sleep(Duration::from_millis(80)).await;
         }
-        wait(&second, "window.maxPendingFrames >= 2 && window.maxPendingFrames <= 3").await?;
+        wait(&second, "document.querySelector('#screen canvas')?.getContext('2d').getImageData(0, 0, 1, 1).data[0] === 200").await?;
+        // Repeated identical captures must not retransmit the framebuffer.
+        let bytes: u64 = second.evaluate("window.vncBytes").await?.into_value()?;
+        for _ in 0..10 {
+            frames_tx.send_replace(Some(frame(640, 360, 200)));
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+        let idle_bytes: u64 = second.evaluate("window.vncBytes").await?.into_value()?;
+        anyhow::ensure!(idle_bytes - bytes < 128, "Static captures generated {} bytes", idle_bytes - bytes);
         frames_tx.send_replace(Some(frame(320, 240, 220)));
         title_tx.send_replace("Changed task".to_owned());
-        wait(&second, "document.querySelector('.fallback-screen')?.width === 320 && document.title === 'Changed task'").await?;
+        wait(&second, "document.querySelector('#screen canvas')?.width === 320 && document.title === 'Changed task'").await?;
+
+        // High-entropy pixels expose accidental JPEG negotiation; sparse changes must stay sparse.
+        let mut noise = RgbImage::new(320, 240);
+        let mut state = 1_u32;
+        for pixel in noise.pixels_mut() {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *pixel = Rgb([state as u8, (state >> 8) as u8, (state >> 16) as u8]);
+        }
+        let encode_noise = |image: &RgbImage| {
+            let mut bytes = Vec::new();
+            PngEncoder::new(&mut bytes).write_image(image.as_raw(), 320, 240, ExtendedColorType::Rgb8).unwrap();
+            Frame { image: bytes.into(), width: 320.0, height: 240.0 }
+        };
+        let original_noise = noise.clone();
+        let noise_matches = "(() => { const canvas = document.querySelector('#screen canvas'); if (!canvas) return false; const data = canvas.getContext('2d').getImageData(0, 0, 320, 240).data; let state = 1; for (let i = 0; i < data.length; i += 4) { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; if (data[i] !== (state & 255) || data[i + 1] !== ((state >>> 8) & 255) || data[i + 2] !== ((state >>> 16) & 255)) return false; } return true; })()";
+        frames_tx.send_replace(Some(encode_noise(&noise)));
+        wait(&second, noise_matches).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let before: u64 = second.evaluate("window.vncBytes").await?.into_value()?;
+        for y in 0..16 { for x in 0..2 { noise.put_pixel(x, y, Rgb([255, 0, 0])); } }
+        frames_tx.send_replace(Some(encode_noise(&noise)));
+        wait(&second, "document.querySelector('#screen canvas').getContext('2d').getImageData(0, 0, 1, 1).data[0] === 255").await?;
+        let after: u64 = second.evaluate("window.vncBytes").await?.into_value()?;
+        anyhow::ensure!(after > before && after - before < 4096, "Sparse update generated {} bytes", after - before);
+        eprintln!("VNC: repeated static captures = {} bytes, 2x16 pixel update = {} bytes", idle_bytes - bytes, after - before);
 
         ready_tx.send_replace(false);
         wait(&second, "!!document.querySelector('.session-overlay') && document.title === 'CodexApp2Web'").await?;
         ready_tx.send_replace(true);
-        wait(&second, "document.querySelector('.fallback-screen')?.width === 320 && !document.querySelector('.session-overlay')").await?;
+        wait(&second, "document.querySelector('#screen canvas')?.width === 320 && !document.querySelector('.session-overlay')").await?;
         second.close().await?;
 
+        frames_tx.send_replace(Some(frame(321, 241, 88)));
         let third = browser.new_page("about:blank").await?;
+        third.evaluate_on_new_document("(() => { const Peer = window.RTCPeerConnection; window.RTCPeerConnection = class extends Peer { createDataChannel(...args) { const channel = super.createDataChannel(...args); window.rfbChannel = channel; return channel; } }; })()").await?;
         third.goto(&url).await?;
-        // Also exercise the normal WebRTC path in Chrome with hardware HEVC support.
-        let supported: bool = third.evaluate("!!RTCRtpReceiver.getCapabilities('video')?.codecs.some(codec => codec.mimeType.toLowerCase() === 'video/h265')").await?.into_value()?;
-        anyhow::ensure!(supported, "Test Chrome does not support WebRTC HEVC");
-        wait(&third, "document.querySelector('video')?.videoWidth === 320 && document.querySelector('.connection-state')?.textContent.includes('WebRTC') && !document.querySelector('.session-overlay')").await?;
+        wait(&third, "document.querySelector('#screen canvas')?.width === 321 && document.querySelector('#screen canvas')?.height === 241 && document.querySelector('.connection-state')?.textContent.includes('WebRTC') && !document.querySelector('.session-overlay')").await?;
+        frames_tx.send_replace(Some(encode_noise(&original_noise)));
+        wait(&third, noise_matches).await?;
+        frames_tx.send_replace(Some(frame(321, 241, 99)));
+        wait(&third, "document.querySelector('#screen canvas')?.getContext('2d').getImageData(0, 0, 1, 1).data[0] === 99").await?;
+        third.evaluate("window.rfbChannel.close()").await?;
+        wait(&third, "document.querySelector('#screen canvas')?.width === 321 && document.querySelector('.connection-state')?.textContent.includes('WebSocket') && !document.querySelector('.session-overlay')").await?;
+        frames_tx.send_replace(Some(frame(321, 241, 109)));
+        wait(&third, "document.querySelector('#screen canvas')?.getContext('2d').getImageData(0, 0, 1, 1).data[0] === 109").await?;
+
+        let fourth = browser.new_page(&url).await?;
+        wait(&fourth, "!!document.querySelector('.primary-button')").await?;
+        fourth.find_element(".primary-button").await?.click().await?;
+        wait(&fourth, "document.querySelector('#screen canvas')?.width === 321 && document.querySelector('.connection-state')?.textContent.includes('WebRTC') && !document.querySelector('.session-overlay')").await?;
+        wait(&third, "!!document.querySelector('.primary-button')").await?;
+        fourth.close().await?;
+
+        // A real peer with no usable ICE route must fall back to WebSocket.
+        let fifth = browser.new_page("about:blank").await?;
+        fifth.evaluate_on_new_document("(() => { const Peer = window.RTCPeerConnection; window.RTCPeerConnection = class extends Peer { constructor(config) { super({ ...config, iceServers: [], iceTransportPolicy: 'relay' }); } }; })()").await?;
+        fifth.goto(&url).await?;
+        wait(&fifth, "document.querySelector('.primary-button') || !document.querySelector('.session-overlay')").await?;
+        fifth.evaluate("document.querySelector('.primary-button')?.click()").await?;
+        wait(&fifth, "document.querySelector('#screen canvas')?.width === 321 && document.querySelector('.connection-state')?.textContent.includes('WebSocket') && !document.querySelector('.session-overlay')").await?;
+        fifth.close().await?;
+
         third.close().await?;
         first.close().await?;
         Ok::<_, anyhow::Error>(())
@@ -157,6 +216,83 @@ async fn browser_video_takeover_resize_and_cdp_reconnect() -> anyhow::Result<()>
     driver.abort();
     server.abort();
     command_task.abort();
+    let _ = std::fs::remove_dir_all(directory);
+    result
+}
+
+#[tokio::test]
+#[ignore = "manual scrolling latency benchmark"]
+async fn scrolling_latency() -> anyhow::Result<()> {
+    use base64::Engine;
+    use std::time::Instant;
+
+    let _ = tracing_subscriber::fmt().with_env_filter("codex_app2web=debug").with_test_writer().try_init();
+
+    let (frames_tx, frames) = watch::channel(Some(frame(1920, 1080, 120)));
+    let (_cursor, cursor) = watch::channel(None);
+    let (_title, title) = watch::channel(String::new());
+    let (_ready, ready) = watch::channel(true);
+    let (_menu, menu) = watch::channel(None);
+    let (commands, _command_rx) = mpsc::channel(64);
+    let cdp = CdpSession {
+        menu,
+        frames,
+        cursor,
+        title,
+        ready,
+        commands,
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, super::router(cdp, Controller::new())).await });
+    let directory = std::env::temp_dir().join(format!("codex-scroll-test-{}", rand::random::<u64>()));
+    let config = BrowserConfig::builder().user_data_dir(&directory).build().map_err(anyhow::Error::msg)?;
+    let (mut browser, mut handler) = Browser::launch(config).await?;
+    let driver = tokio::spawn(async move { while handler.next().await.is_some() {} });
+    let result = async {
+        let page = browser.new_page("about:blank").await?;
+        let png: String = page.evaluate(r#"(() => {
+            const canvas = document.createElement('canvas'); canvas.width = 1920; canvas.height = 1800;
+            const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 1920, 1800);
+            ctx.font = '16px monospace';
+            for (let row = 0; row < 90; row++) {
+                ctx.fillStyle = ['#333', '#1967d2', '#666', '#b22'][row % 4];
+                ctx.fillText(`${row}: async function handleMessage(request) { return await session.execute(request.command); }`, 300, 20 * row + 18);
+            }
+            ctx.fillStyle = '#eee'; ctx.fillRect(0, 0, 260, 1800);
+            return canvas.toDataURL('image/png').split(',')[1];
+        })()"#).await?.into_value()?;
+        let image = image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(png)?)?.to_rgb8();
+        let samples: Vec<Frame> = (0..30).map(|index| {
+            let mut viewport = image::imageops::crop_imm(&image, 0, index * 20, 1920, 1080).to_image();
+            for y in 0..8 { for x in 0..8 { viewport.put_pixel(x, y, Rgb([index as u8 + 1, 0, 0])); } }
+            let mut bytes = Vec::new();
+            PngEncoder::new(&mut bytes).write_image(viewport.as_raw(), 1920, 1080, ExtendedColorType::Rgb8).unwrap();
+            Frame { image: bytes.into(), width: 1920.0, height: 1080.0 }
+        }).collect();
+        page.evaluate_on_new_document(include_str!("session.test.js")).await?;
+        page.goto(&url).await?;
+        wait(&page, "!document.querySelector('.session-overlay')").await?;
+        page.evaluate("window.rendered = []; window.recording = true; (() => { let previous = -1; function tick() { const canvas = document.querySelector('#screen canvas'); if (canvas) { const value = canvas.getContext('2d').getImageData(0, 0, 1, 1).data[0]; if (value !== previous) { window.rendered.push([performance.now(), value]); previous = value; } } if (window.recording) requestAnimationFrame(tick); } tick(); })()").await?;
+        let started = Instant::now();
+        for sample in samples {
+            frames_tx.send_replace(Some(sample));
+            tokio::time::sleep(Duration::from_millis(67)).await;
+        }
+        let stopped = Instant::now();
+        wait(&page, "document.querySelector('#screen canvas').getContext('2d').getImageData(0, 0, 1, 1).data[0] === 30").await?;
+        let catch_up = stopped.elapsed();
+        let rendered: serde_json::Value = page.evaluate("(async () => { await new Promise(requestAnimationFrame); window.recording = false; return { frames: window.rendered, bytes: window.vncBytes }; })()").await?.into_value()?;
+        eprintln!("SCROLL produced={:?}, catch_up={:?}, rendered={rendered}", stopped.duration_since(started), catch_up);
+        anyhow::ensure!(catch_up < Duration::from_millis(500), "Scrolling left a stale-frame backlog: {catch_up:?}");
+        anyhow::ensure!(rendered["frames"].as_array().unwrap().len() >= 10, "Too few scrolling updates: {rendered}");
+        page.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let _ = browser.close().await;
+    let _ = browser.wait().await;
+    driver.abort();
+    server.abort();
     let _ = std::fs::remove_dir_all(directory);
     result
 }

@@ -6,9 +6,10 @@
         "build": "tsc --noEmit && vite build",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test": "node --test tests/*.test.mjs"
+        "test": "node --experimental-test-module-mocks --test tests/*.test.mjs"
     },
     "dependencies": {
+        "@novnc/novnc": "1.7.0",
         "i18next": "26.5",
         "i18next-browser-languagedetector": "8.2",
         "react": "19.3",

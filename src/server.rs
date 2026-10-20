@@ -6,11 +6,12 @@ use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::serve::ListenerExt;
 use axum::Router;
 use axum_extra::extract::cookie::Key;
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::cdp::CdpSession;
 use crate::session;
@@ -53,7 +54,15 @@ pub(crate) async fn serve(
         let listener = tokio::net::TcpListener::bind(address).await?;
 
         info!(address = %listener.local_addr()?, "Listening on HTTP");
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener.tap_io(|stream| {
+                if let Err(error) = stream.set_nodelay(true) {
+                    warn!(%error, "Failed to disable TCP Nagle buffering");
+                }
+            }),
+            app,
+        )
+        .await?;
     }
 
     Ok(())

@@ -8,9 +8,9 @@ use tracing::{error, info, instrument, warn, Instrument, Span};
 
 use crate::cdp::{CdpSession, Command};
 use crate::input;
-use crate::protocol::{ClientMessage, FallbackCommand, ServerMessage, VideoErrorCode};
+use crate::protocol::{ClientMessage, ServerMessage, VideoErrorCode};
+use crate::video::vnc::VncVideo;
 use crate::video::webrtc::{self, VideoSession};
-use crate::video::websocket::WebSocketVideo;
 
 pub(crate) mod controller;
 use self::controller::Controller;
@@ -32,14 +32,14 @@ impl Drop for ControlLease {
 
 enum Video {
     WebRtc(VideoSession),
-    WebSocket(WebSocketVideo),
+    Vnc(VncVideo),
 }
 
 impl Video {
     async fn close(self) {
         match self {
             Self::WebRtc(video) => video.close().await,
-            Self::WebSocket(video) => video.close().await,
+            Self::Vnc(video) => video.close().await,
         }
     }
 }
@@ -53,11 +53,13 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
     } else {
         None
     };
+
     let id = if rejection.is_none() {
         controller.claim(takeover)
     } else {
         None
     };
+
     let Some(id) = id else {
         let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(close(rejection.unwrap_or("occupied")))).await;
         return;
@@ -95,10 +97,12 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
         frames.mark_changed();
 
         let mut last_size = None;
+
         loop {
             tokio::select! {
                 result = frames.changed() => {
                     result?;
+
                     let frame = frames.borrow_and_update().clone();
 
                     if let Some(frame) = frame {
@@ -130,8 +134,7 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                     }
                 }
                 packet = async {
-                    if let Some(Video::WebSocket(current)) = video.as_mut() {
-                        // Reserve capacity before consuming a frame; cancellation must not lose an encoded frame.
+                    if let Some(Video::Vnc(current)) = video.as_mut() {
                         let permit = video_tx.reserve().await?;
                         let packet = current.next().await?;
 
@@ -160,23 +163,21 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                                         cdp.commands.send(Command { owner: id, input }).await?;
                                     }
                                 }
-                                ClientMessage::Fallback(FallbackCommand::VideoAck { sequence }) => {
-                                    if let Some(Video::WebSocket(current)) = video.as_mut() { current.acknowledge(sequence); }
-                                }
-                                ClientMessage::Fallback(FallbackCommand::Fallback) => {
-                                    if !matches!(video, Some(Video::WebSocket(_))) {
+                                ClientMessage::RequestFallback => {
+                                    if !matches!(video, Some(Video::Vnc(_))) {
                                         if let Some(current) = video.take() { current.close().await; }
-                                        video = Some(Video::WebSocket(WebSocketVideo::start(cdp.frames.clone())));
-                                        info!(transport = "WebSocket", "Video transport selected");
+                                        video = Some(Video::Vnc(VncVideo::start(cdp.frames.clone())?));
+                                        info!(transport = "VNC/WebSocket", "Video transport selected");
                                     }
                                 }
-                                ClientMessage::Video(message) => {
-                                    if matches!(video, Some(Video::WebSocket(_))) { continue; }
+                                ClientMessage::WebRtc(message) => {
+                                    if matches!(video, Some(Video::Vnc(_))) { continue; }
 
                                     let mut current = match video.take() {
                                         Some(Video::WebRtc(current)) => Some(current),
                                         _ => None,
                                     };
+
                                     let result = webrtc::signal(cdp.frames.clone(), &mut current, message, &signals_tx).await;
 
                                     video = current.map(Video::WebRtc);
@@ -190,6 +191,11 @@ pub(crate) async fn viewer(mut socket: WebSocket, cdp: CdpSession, controller: C
                                         }
                                     }
                                 }
+                            }
+                        }
+                        Some(Ok(Message::Binary(data))) => {
+                            if let Some(Video::Vnc(current)) = video.as_mut() {
+                                current.receive(&data).await?;
                             }
                         }
                         Some(Ok(Message::Ping(data))) => { control_tx.try_send(Message::Pong(data))?; }

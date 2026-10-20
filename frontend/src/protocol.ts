@@ -31,19 +31,18 @@ export type InputMessage =
 
 export type ClientMessage =
     | InputMessage
-    | { type: 'offer'; video_id: string; width: number; height: number; sdp: string }
+    | { type: 'offer'; video_id: string; sdp: string }
     | { type: 'ice'; video_id: string; candidate: RTCIceCandidateInit | null }
-    | { type: 'fallback' }
-    | { type: 'video_ack'; sequence: number };
+    | { type: 'request_fallback' };
 
-export type VideoSignal =
+export type WebRtcSignal =
     | { type: 'answer'; video_id: string; description: RTCSessionDescriptionInit }
     | { type: 'ice'; video_id: string; candidate: RTCIceCandidateInit | null };
 
 export type ServerMessage =
     | { type: 'menu'; menu: NativeMenu | null }
-    | VideoSignal
+    | WebRtcSignal
     | { type: 'size'; width: number; height: number }
     | { type: 'title'; title: string }
     | { type: 'cursor'; point: Point | null }
-    | { type: 'video_error'; code: 'signaling_failed' | 'encoder_failed' | 'transport_failed' };
+    | { type: 'video_error'; code: 'signaling_failed' | 'transport_failed' };

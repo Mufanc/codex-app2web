@@ -30,27 +30,17 @@
         "collapse": "Collapse toolbar"
     },
     "connection": {
-        "switching": "Switching to WebSocket",
-        "websocketTimeout": "WebSocket video connection timed out",
         "webrtcConnecting": "Connecting to WebRTC",
         "timeout": "Connection timed out. Please try again",
         "noUdp": "The browser provided no UDP candidates",
         "signalingError": "WebRTC signaling failed: {{error}}",
-        "playbackError": "Video playback failed: {{error}}",
         "webrtcFailed": "WebRTC connection failed; UDP hole punching may be unavailable",
-        "webrtcError": "WebRTC video connection failed: {{error}}",
-        "fallbackLog": "{{error}}; switching to WebSocket video"
-    },
-    "video": {
-        "unsupported": "This Chrome browser does not support WebCodecs",
-        "canvasError": "Unable to create the video canvas",
-        "decodeError": "WebSocket video decoding failed: {{error}}",
-        "incomplete": "Incomplete video frame",
-        "missingKeyframe": "Video size changed without a keyframe"
+        "webrtcError": "WebRTC connection failed: {{error}}",
+        "vncConnecting": "Connecting VNC…",
+        "vncFailed": "VNC connection failed"
     },
     "errors": {
         "signaling_failed": "Unable to negotiate video",
-        "encoder_failed": "Video encoding failed",
         "transport_failed": "Video transport failed"
     }
 }

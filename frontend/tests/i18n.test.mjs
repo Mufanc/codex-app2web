@@ -51,5 +51,5 @@ test('translation catalogs contain matching keys and interpolation variables', (
     }
 
     assert.equal(t('toolbar.resolution', { lng: 'en', width: 1920, height: 1080 }), 'Remote 1920 × 1080');
-    assert.equal(t('video.decodeError', { lng: 'zh', error: 'test' }), 'WebSocket 视频解码失败：test');
+    assert.equal(t('connection.signalingError', { lng: 'zh', error: 'test' }), 'WebRTC 信令失败：test');
 });
