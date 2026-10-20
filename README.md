@@ -2,6 +2,8 @@
 
 Turn the Codex desktop app into a web app accessible from a browser
 
+![CodexApp2Web browser interface with expanded session controls](assets/promo.svg)
+
 - Captures the Codex UI and forwards input through the Chrome DevTools Protocol without requiring system screen-recording permission
 - Streams lossless framebuffer updates using embedded TigerVNC and noVNC over WebRTC, with WebSocket as a fallback
 - Proxies native Codex context menus so they can be used from the remote page
