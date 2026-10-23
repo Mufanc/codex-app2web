@@ -11,6 +11,8 @@
     input.setSelectionRange(0, 0);
     await settle();
     const start = point();
+    near(start.fontSize, 20, 'input font size');
+    assert(start.height > 0, 'input caret height');
     near(start.x, input.getBoundingClientRect().left + 3 + 19, 'input padding and border');
     input.setSelectionRange(5, 5);
     await settle();
@@ -34,6 +36,8 @@
     textarea.setSelectionRange(0, 0);
     await settle();
     const firstLine = point();
+    near(firstLine.fontSize, 20, 'textarea font size');
+    assert(firstLine.height > 0, 'textarea caret height');
     textarea.setSelectionRange(35, 35);
     await settle();
     assert(point().y > firstLine.y + 20, 'textarea wraps');
@@ -52,11 +56,25 @@
     range.collapse(true);
     near(point().x, range.getBoundingClientRect().left, 'contenteditable focus end');
     near(point().y, range.getBoundingClientRect().bottom, 'contenteditable baseline');
+    near(point().height, range.getBoundingClientRect().height, 'contenteditable caret height');
+    near(point().fontSize, 20, 'contenteditable font size');
+
+    editable.style.fontSize = '32px';
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    near(point().fontSize, 32, 'changed font size');
+    editable.style.transform = 'scale(1.5)';
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    near(point().fontSize, 48, 'transformed font size');
+    near(point().height, range.getBoundingClientRect().height, 'transformed caret height');
+    editable.style.transform = '';
 
     editable.replaceChildren(document.createElement('br'));
     selection.setPosition(editable, 0);
     await settle();
     assert(Number.isFinite(point().x) && Number.isFinite(point().y), 'empty editable has a position');
+    assert(point().height > 0 && point().fontSize > 0, 'empty editable has font metrics');
     assert(document.querySelectorAll('html > div').length === 0, 'mirror removed');
 
     globalThis.__codexApp2WebCursor.stop();

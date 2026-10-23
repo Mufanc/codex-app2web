@@ -1,4 +1,4 @@
-import type { InputMessage, Point } from './protocol.ts';
+import type { Caret, InputMessage, Point } from './protocol.ts';
 
 type Dimensions = { sourceWidth: number; sourceHeight: number; decodedSize: [number, number] | null };
 type Picture = { left: number; top: number; width: number; height: number };
@@ -12,6 +12,7 @@ export function createInput(
     const pressed = new Set<string>();
     let composing = false;
     let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+    let caret: Caret | null = null;
 
     function pictureRect(): Picture | null {
         const { sourceWidth, sourceHeight, decodedSize: size } = dimensions();
@@ -44,14 +45,31 @@ export function createInput(
         };
     }
 
-    function placeKeyboard(point: Point | null) {
+    function placeKeyboard(point: Caret | null) {
+        caret = point;
+
         const { sourceWidth, sourceHeight } = dimensions();
         const rect = pictureRect();
 
         if (!rect || !point) return;
 
+        const scale = rect.height / sourceHeight;
+        const height =
+            typeof point.height === 'number' && Number.isFinite(point.height) && point.height > 0
+                ? point.height * scale
+                : 20;
+        const fontSize =
+            typeof point.fontSize === 'number' && Number.isFinite(point.fontSize) && point.fontSize > 0
+                ? point.fontSize * scale
+                : height * 0.8;
+
+        keyboard.style.height = `${height}px`;
+        keyboard.style.lineHeight = `${height}px`;
+        keyboard.style.fontSize = `${fontSize}px`;
         keyboard.style.left = `${Math.max(0, Math.min(stage.clientWidth - 2, rect.left + (point.x / sourceWidth) * rect.width))}px`;
-        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - 20, rect.top + (point.y / sourceHeight) * rect.height))}px`;
+        // Remote caret coordinates mark its bottom; align the local input's bottom with it.
+        keyboard.style.top = `${Math.max(0, Math.min(stage.clientHeight - height, rect.top + (point.y / sourceHeight) * rect.height - height))}px`;
+        keyboard.style.maxWidth = `${Math.max(2, stage.clientWidth - parseFloat(keyboard.style.left))}px`;
     }
 
     function modifiers(event: KeyboardEvent) {
@@ -98,14 +116,22 @@ export function createInput(
 
     function onCompositionStart() {
         composing = true;
+        keyboard.dataset.composing = 'true';
     }
 
     function onCompositionEnd() {
         composing = false;
+        delete keyboard.dataset.composing;
+        keyboard.style.width = '';
         compositionTimer = setTimeout(sendKeyboardText, 0);
     }
 
     function onInput(event: Event) {
+        if (composing) {
+            keyboard.style.width = '2px';
+            keyboard.style.width = `${keyboard.scrollWidth + 2}px`;
+        }
+
         if (!(event as InputEvent).isComposing && !composing) sendKeyboardText();
     }
 
@@ -175,7 +201,10 @@ export function createInput(
         clearTimeout(compositionTimer);
         pressed.clear();
         composing = false;
+        caret = null;
         keyboard.value = '';
+        delete keyboard.dataset.composing;
+        keyboard.style.width = '';
         if (notify) send({ type: 'reset' });
     }
 
@@ -192,6 +221,9 @@ export function createInput(
     return {
         pictureRect,
         placeKeyboard,
+        refresh() {
+            placeKeyboard(caret);
+        },
         reset,
         dispose() {
             reset();

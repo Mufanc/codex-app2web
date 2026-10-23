@@ -2,6 +2,7 @@ export const MAX_VIDEO_WIDTH = 4096;
 export const MAX_VIDEO_HEIGHT = 2160;
 
 export type Point = { x: number; y: number };
+export type Caret = Point & { height?: number; fontSize?: number };
 
 export type MenuItem = {
     id?: string;
@@ -44,5 +45,5 @@ export type ServerMessage =
     | WebRtcSignal
     | { type: 'size'; width: number; height: number }
     | { type: 'title'; title: string }
-    | { type: 'cursor'; point: Point | null }
+    | { type: 'cursor'; point: Caret | null }
     | { type: 'video_error'; code: 'signaling_failed' | 'transport_failed' };

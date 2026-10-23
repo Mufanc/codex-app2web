@@ -180,6 +180,18 @@ button:focus-visible {
     font-size: 16px;
 }
 
+#keyboard[data-composing] {
+    opacity: 1;
+    outline: none;
+    border-radius: 0;
+    background: var(--page-bg);
+    color: var(--text);
+    font-family: inherit;
+    line-height: 20px;
+    white-space: pre;
+    text-decoration: underline;
+}
+
 .session-toolbar {
     position: absolute;
     z-index: 20;

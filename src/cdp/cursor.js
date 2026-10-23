@@ -67,6 +67,8 @@
             return {
                 x: bounds.left + (caret.left - origin.left - element.scrollLeft) * scaleX,
                 y: bounds.top + (caret.bottom - origin.top - element.scrollTop) * scaleY,
+                height: caret.height * scaleY,
+                fontSize: number(style, 'fontSize') * scaleY,
             };
         } finally {
             mirror.remove();
@@ -84,7 +86,13 @@
         range.collapse(true);
         const rect = range.getClientRects()[0];
 
-        if (rect?.height) return { x: rect.left, y: rect.bottom };
+        if (rect?.height) {
+            const parent = selection.focusNode.nodeType === Node.ELEMENT_NODE
+                ? selection.focusNode : selection.focusNode.parentElement;
+            const scaleY = element.getBoundingClientRect().height / element.offsetHeight;
+
+            return { x: rect.left, y: rect.bottom, height: rect.height, fontSize: number(getComputedStyle(parent), 'fontSize') * scaleY };
+        }
 
         // Empty editable blocks have no text rectangle; use their actual content inset.
         const block = selection.focusNode.nodeType === Node.ELEMENT_NODE
@@ -94,10 +102,13 @@
         const bounds = target.getBoundingClientRect();
         const style = getComputedStyle(target);
         const lineHeight = Number.parseFloat(style.lineHeight) || number(style, 'fontSize');
+        const scaleY = target.offsetHeight ? bounds.height / target.offsetHeight : 1;
 
         return {
             x: bounds.left + number(style, 'borderLeftWidth') + number(style, 'paddingLeft'),
-            y: bounds.top + number(style, 'borderTopWidth') + number(style, 'paddingTop') + lineHeight,
+            y: bounds.top + (number(style, 'borderTopWidth') + number(style, 'paddingTop') + lineHeight) * scaleY,
+            height: lineHeight * scaleY,
+            fontSize: number(style, 'fontSize') * scaleY,
         };
     }
 

@@ -77,7 +77,7 @@ function setup(t, viewport, source, decoded = source, Peer) {
         },
     });
     const screen = Object.assign(new EventTarget(), { videoWidth: decoded[0], videoHeight: decoded[1] });
-    const keyboard = Object.assign(new EventTarget(), { style: {}, focus() {} });
+    const keyboard = Object.assign(new EventTarget(), { style: {}, dataset: {}, scrollWidth: 100, focus() {} });
     const remote = startRemote(
         stage,
         screen,
@@ -145,7 +145,7 @@ test('upscaled video maps pointer and input-method position to the source', (t) 
     assert.equal(point.x, 720);
     assert.equal(point.y, 405);
     assert.equal(remote.keyboard.style.left, '1440px');
-    assert.equal(remote.keyboard.style.top, '810px');
+    assert.equal(remote.keyboard.style.top, '790px');
 });
 
 test('downscaled video ignores letterbox clicks and maps its full visible area', (t) => {
@@ -157,7 +157,41 @@ test('downscaled video ignores letterbox clicks and maps its full visible area',
 
     assert.equal(point.x, 1920);
     assert.equal(point.y, 1080);
-    assert.equal(remote.keyboard.style.top, '412.5px');
+    assert.equal(remote.keyboard.style.top, '392.5px');
+});
+
+test('remote caret bottom anchors the local input within the viewport', (t) => {
+    const remote = setup(t, [800, 600], [800, 600]);
+    const cursor = (y) => remote.socket.onmessage({ data: JSON.stringify({ type: 'cursor', point: { x: 100, y } }) });
+
+    cursor(300);
+    assert.equal(remote.keyboard.style.top, '280px');
+    cursor(10);
+    assert.equal(remote.keyboard.style.top, '0px');
+    cursor(600);
+    assert.equal(remote.keyboard.style.top, '580px');
+});
+
+test('caret font and height follow video scaling and viewport resizing', (t) => {
+    const remote = setup(t, [800, 600], [1600, 1200]);
+    remote.socket.onmessage({
+        data: JSON.stringify({ type: 'cursor', point: { x: 200, y: 600, height: 40, fontSize: 32 } }),
+    });
+    assert.equal(remote.keyboard.style.fontSize, '16px');
+    assert.equal(remote.keyboard.style.height, '20px');
+    assert.equal(remote.keyboard.style.lineHeight, '20px');
+    assert.equal(remote.keyboard.style.top, '280px');
+
+    remote.resize(1600, 1200);
+    assert.equal(remote.keyboard.style.fontSize, '32px');
+    assert.equal(remote.keyboard.style.height, '40px');
+    assert.equal(remote.keyboard.style.top, '560px');
+
+    remote.socket.onmessage({
+        data: JSON.stringify({ type: 'cursor', point: { x: 200, y: 600, height: -1, fontSize: 0 } }),
+    });
+    assert.equal(remote.keyboard.style.fontSize, '16px');
+    assert.equal(remote.keyboard.style.height, '20px');
 });
 
 test('only a changed viewport is reported, after one second of inactivity', (t) => {
@@ -269,6 +303,27 @@ test('superseded socket callbacks cannot stop or rename the current session', (t
     assert.equal(remote.socket, current);
 });
 
+test('composition stays local and visible until committed', (t) => {
+    const remote = setup(t, [800, 600], [960, 540]);
+    const { keyboard } = remote;
+    remote.socket.sent.length = 0;
+    keyboard.dispatchEvent(new Event('compositionstart'));
+    keyboard.value = 'zhe ge xiao guo';
+    keyboard.dispatchEvent(Object.assign(new Event('input'), { isComposing: true }));
+    assert.equal(keyboard.dataset.composing, 'true');
+    assert.equal(keyboard.style.width, '102px');
+    assert.deepEqual(remote.socket.sent, []);
+
+    keyboard.value = '这个效果';
+    keyboard.dispatchEvent(new Event('compositionend'));
+    keyboard.dispatchEvent(Object.assign(new Event('input'), { isComposing: false }));
+    t.mock.timers.tick(1);
+    assert.equal(keyboard.dataset.composing, undefined);
+    assert.equal(keyboard.style.width, '');
+    assert.equal(keyboard.value, '');
+    assert.deepEqual(remote.socket.sent, [{ type: 'text', text: '这个效果' }]);
+});
+
 test('losing focus releases input and cancels unfinished composition', (t) => {
     const remote = setup(t, [800, 600], [960, 540]);
     const key = (type) =>
@@ -279,7 +334,11 @@ test('losing focus releases input and cancels unfinished composition', (t) => {
             shiftKey: true,
         });
     remote.keyboard.dispatchEvent(key('keydown'));
+    remote.keyboard.dispatchEvent(new Event('compositionstart'));
     remote.keyboard.value = 'unfinished';
+    window.dispatchEvent(new Event('blur'));
+    assert.equal(remote.keyboard.dataset.composing, undefined);
+    assert.equal(remote.keyboard.style.width, '');
     remote.keyboard.dispatchEvent(new Event('compositionend'));
     window.dispatchEvent(new Event('blur'));
     t.mock.timers.tick(1);
@@ -290,7 +349,7 @@ test('losing focus releases input and cancels unfinished composition', (t) => {
         remote.socket.sent
             .filter((message) => ['key', 'reset', 'text'].includes(message.type))
             .map((message) => message.type),
-        ['key', 'reset'],
+        ['key', 'reset', 'reset'],
     );
 
     remote.stage.dispatchEvent(new Event('pointercancel'));

@@ -50,6 +50,7 @@ export function startRemote(
 
     function resizeVideo(immediate = false) {
         clearTimeout(resizeTimer);
+        input.refresh();
 
         resizeTimer = setTimeout(
             () => {
@@ -115,6 +116,7 @@ export function startRemote(
                 (width, height) => {
                     clearTimeout(timeout);
                     decodedSize = [width, height];
+                    input.refresh();
                     onState('streaming');
                 },
                 fail,
@@ -199,6 +201,7 @@ export function startRemote(
 
                 sourceWidth = message.width;
                 sourceHeight = message.height;
+                input.refresh();
 
                 if (changed) {
                     onSize(sourceWidth, sourceHeight);
